@@ -62,6 +62,9 @@ private:
     uint64_t allocate_node(bool is_leaf);
     void write_node(uint64_t offset, const BTreeNode& node);
     BTreeNode read_node(uint64_t offset);
+
+    void split_child(uint64_t parent_off, BTreeNode& parent, uint32_t child_idx, uint64_t child_off, BTreeNode& child);
+    void insert_non_full(uint64_t node_off, const std::string& key, size_t data_offset);
 };
 
 }

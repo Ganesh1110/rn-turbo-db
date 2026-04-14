@@ -2,10 +2,14 @@
 #include "WALManager.h"
 #include <cstring>
 #include <iostream>
+#include <algorithm>
 
 namespace secure_db {
 
-// A highly performant hardware-friendly checksum for the B-Tree header validation
+struct FreeBlock {
+    uint64_t next;
+};
+
 uint32_t calculate_crc32(const uint8_t* data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < length; i++) {
@@ -21,22 +25,18 @@ PersistentBPlusTree::PersistentBPlusTree(MMapRegion* mmap, WALManager* wal)
     : mmap_(mmap), wal_(wal) {}
 
 void PersistentBPlusTree::init() {
-    // Read the first bytes of mmap to check for magic
     std::string header_bytes = mmap_->read(0, sizeof(TreeHeader));
     std::memcpy(&header_, header_bytes.data(), sizeof(TreeHeader));
     
     if (header_.magic != 0x42504C54) {
-        // Format new tree layout natively inside the MMap
         std::memset(&header_, 0, sizeof(TreeHeader));
-        header_.magic = 0x42504C54; // 'BPLT'
-        
-        // Root node is right after the header padding (e.g. at 4096 to align to 4KB OS blocks)
+        header_.magic = 0x42504C54;
         header_.root_offset = 4096;
         header_.node_count = 1;
         header_.height = 1;
-        header_.next_free_offset = 8192; // Records start here
+        header_.next_free_offset = 8192;
+        header_.free_list_head = 0;
         
-        // Initialize an empty root leaf node
         BTreeNode root_node;
         std::memset(&root_node, 0, sizeof(BTreeNode));
         root_node.is_leaf = true;
@@ -44,50 +44,49 @@ void PersistentBPlusTree::init() {
         
         checkpoint();
     } else {
-        // Existing tree, verify checksum to ensure data integrity after a crash/restart
         uint32_t expected_crc = header_.checksum;
-        header_.checksum = 0; // zero it out for identical calculation base
+        header_.checksum = 0;
         uint32_t actual_crc = calculate_crc32(reinterpret_cast<uint8_t*>(&header_), sizeof(TreeHeader));
+        header_.checksum = expected_crc;
         
         if (expected_crc != actual_crc) {
-            std::cerr << "CRITICAL: B+Tree Checksum Mismatch. Memory Corruption detected!\n";
-            // In production, we'd trigger the WAL recovery here
-            header_.checksum = expected_crc;
-        } else {
-            header_.checksum = expected_crc; // Restore it
-            std::cout << "B+Tree Checksum Validated securely. Nodes registered: " << header_.node_count << "\n";
+            std::cerr << "CRITICAL: B+Tree Checksum Mismatch!\n";
         }
     }
 }
 
 void PersistentBPlusTree::checkpoint() {
-    // Core transactional commit: write internal states instantly to the disk backing map
     header_.checksum = 0;
     header_.checksum = calculate_crc32(reinterpret_cast<uint8_t*>(&header_), sizeof(TreeHeader));
-    
-    // Convert header struct to string block natively
     std::string encoded(reinterpret_cast<const char*>(&header_), sizeof(TreeHeader));
     
     if (wal_) {
         wal_->logPageWrite(0, encoded);
     } else {
         mmap_->write(0, encoded);
-        // MS_SYNC flush ensures power-loss safety by blocking until the kernel physically writes to SSD
         mmap_->sync(0, sizeof(TreeHeader));
     }
 }
 
 uint64_t PersistentBPlusTree::allocate_node(bool is_leaf) {
-    // Calculates exact offset: Header block (0-4096) + existing node array sizes
-    uint64_t new_offset = 4096 + (header_.node_count * 4096);
-    header_.node_count++;
+    uint64_t offset;
+    if (header_.free_list_head != 0) {
+        offset = header_.free_list_head;
+        std::string bytes = mmap_->read(offset, sizeof(FreeBlock));
+        FreeBlock fb;
+        std::memcpy(&fb, bytes.data(), sizeof(FreeBlock));
+        header_.free_list_head = fb.next;
+    } else {
+        offset = 4096 + (header_.node_count * 4096);
+        header_.node_count++;
+    }
     
     BTreeNode node;
     std::memset(&node, 0, sizeof(BTreeNode));
     node.is_leaf = is_leaf;
-    write_node(new_offset, node);
+    write_node(offset, node);
     
-    return new_offset;
+    return offset;
 }
 
 void PersistentBPlusTree::write_node(uint64_t offset, const BTreeNode& node) {
@@ -107,42 +106,121 @@ BTreeNode PersistentBPlusTree::read_node(uint64_t offset) {
 }
 
 void PersistentBPlusTree::insert(const std::string& key, size_t data_offset) {
-    // Real implementation requires recursive node traversal and split chains
-    // For this prototype architecture, we access the root node exactly and simulate filling
-    BTreeNode node = read_node(header_.root_offset);
+    uint64_t root_off = header_.root_offset;
+    BTreeNode root = read_node(root_off);
     
-    if (node.num_keys < BTreeNode::MAX_KEYS) {
-        int idx = node.num_keys;
-        for (uint32_t i = 0; i < node.num_keys; i++) {
-            if (std::string(node.keys[i]) == key) {
-                // Update existing record's pointer directly over the mmap
-                node.values[i] = data_offset;
-                write_node(header_.root_offset, node);
-                return;
-            }
+    if (root.num_keys == BTreeNode::MAX_KEYS) {
+        uint64_t new_root_off = allocate_node(false);
+        BTreeNode new_root = read_node(new_root_off);
+        new_root.children[0] = root_off;
+        
+        split_child(new_root_off, new_root, 0, root_off, root);
+        
+        header_.root_offset = new_root_off;
+        header_.height++;
+        
+        insert_non_full(new_root_off, key, data_offset);
+    } else {
+        insert_non_full(root_off, key, data_offset);
+    }
+    checkpoint();
+}
+
+void PersistentBPlusTree::split_child(uint64_t parent_off, BTreeNode& parent, uint32_t child_idx, uint64_t child_off, BTreeNode& child) {
+    uint64_t sibling_off = allocate_node(child.is_leaf);
+    BTreeNode sibling = read_node(sibling_off);
+    
+    uint32_t t = BTreeNode::MAX_KEYS / 2;
+    sibling.num_keys = BTreeNode::MAX_KEYS - t - 1;
+    
+    for (uint32_t j = 0; j < sibling.num_keys; j++) {
+        std::strncpy(sibling.keys[j], child.keys[j + t + 1], 63);
+        sibling.values[j] = child.values[j + t + 1];
+    }
+    
+    if (!child.is_leaf) {
+        for (uint32_t j = 0; j <= sibling.num_keys; j++) {
+            sibling.children[j] = child.children[j + t + 1];
+        }
+    }
+    
+    uint32_t old_child_keys = child.num_keys;
+    child.num_keys = t;
+    
+    for (uint32_t j = parent.num_keys; j > child_idx; j--) {
+        parent.children[j + 1] = parent.children[j];
+    }
+    parent.children[child_idx + 1] = sibling_off;
+    
+    for (uint32_t j = parent.num_keys; j > child_idx; j--) {
+        std::strncpy(parent.keys[j], parent.keys[j - 1], 63);
+        parent.values[j] = parent.values[j - 1];
+    }
+    
+    std::strncpy(parent.keys[child_idx], child.keys[t], 63);
+    parent.values[child_idx] = child.values[t];
+    parent.num_keys++;
+    
+    write_node(parent_off, parent);
+    write_node(child_off, child);
+    write_node(sibling_off, sibling);
+}
+
+void PersistentBPlusTree::insert_non_full(uint64_t node_off, const std::string& key, size_t data_offset) {
+    BTreeNode node = read_node(node_off);
+    int i = node.num_keys - 1;
+    
+    if (node.is_leaf) {
+        while (i >= 0 && key < std::string(node.keys[i])) {
+            std::strncpy(node.keys[i + 1], node.keys[i], 63);
+            node.values[i + 1] = node.values[i];
+            i--;
         }
         
-        // Append new key safely 
-        std::strncpy(node.keys[idx], key.c_str(), 63);
-        node.values[idx] = data_offset;
-        node.num_keys++;
-        
-        write_node(header_.root_offset, node);
+        if (i >= 0 && key == std::string(node.keys[i])) {
+            node.values[i] = data_offset;
+        } else {
+            std::strncpy(node.keys[i + 1], key.c_str(), 63);
+            node.values[i + 1] = data_offset;
+            node.num_keys++;
+        }
+        write_node(node_off, node);
     } else {
-        // Node Split simulation point
-        std::cerr << "B+ Tree Node Split triggered! The buffered compactor absorbs this latency normally.\n";
+        while (i >= 0 && key < std::string(node.keys[i])) {
+            i--;
+        }
+        i++;
+        uint64_t child_off = node.children[i];
+        BTreeNode child = read_node(child_off);
+        
+        if (child.num_keys == BTreeNode::MAX_KEYS) {
+            split_child(node_off, node, i, child_off, child);
+            if (key > std::string(node.keys[i])) {
+                i++;
+            }
+        }
+        insert_non_full(node.children[i], key, data_offset);
     }
 }
 
 size_t PersistentBPlusTree::find(const std::string& key) {
-    // Jump straight to the B-Tree root using memory map offset reading
-    BTreeNode node = read_node(header_.root_offset);
-    for (uint32_t i = 0; i < node.num_keys; i++) {
-        if (std::string(node.keys[i]) == key) {
-            return node.values[i]; // Returns the exact memory offset where the serialized binary payload lives
+    uint64_t curr_off = header_.root_offset;
+    while (true) {
+        BTreeNode node = read_node(curr_off);
+        uint32_t i = 0;
+        while (i < node.num_keys && key > std::string(node.keys[i])) {
+            i++;
         }
+        
+        if (i < node.num_keys && key == std::string(node.keys[i])) {
+            return node.values[i];
+        }
+        
+        if (node.is_leaf) {
+            return 0;
+        }
+        curr_off = node.children[i];
     }
-    return 0; // 0 offset implies not found in our mmap structure
 }
 
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <jsi/jsi.h>
+#include <shared_mutex>
 #include <memory>
 #include <chrono>
 #include <string>
@@ -47,6 +48,7 @@ public:
     bool clearStorage();
     
 private:
+    mutable std::shared_mutex rw_mutex_;
     std::chrono::high_resolution_clock::time_point start_time_;
     std::unique_ptr<SecureCryptoContext> crypto_;
     std::unique_ptr<MMapRegion> mmap_;

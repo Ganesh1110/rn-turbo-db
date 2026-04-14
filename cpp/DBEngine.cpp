@@ -2,6 +2,7 @@
 #include "WALManager.h"
 #include <iostream>
 #include <vector>
+#include <shared_mutex>
 
 namespace secure_db {
 
@@ -63,6 +64,7 @@ facebook::jsi::Value DBEngine::get(
                    const facebook::jsi::Value& thisValue,
                    const facebook::jsi::Value* args,
                    size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
                 return facebook::jsi::Value(this->benchmark());
             }
         );
@@ -72,6 +74,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 2,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
                 std::string path = args[0].getString(runtime).utf8(runtime);
                 size_t size = args[1].asNumber();
                 return facebook::jsi::Value(this->initStorage(path, size));
@@ -83,6 +86,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 2,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
                 size_t offset = args[0].asNumber();
                 std::string data = args[1].getString(runtime).utf8(runtime);
                 this->write(offset, data);
@@ -95,6 +99,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 2,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
                 size_t offset = args[0].asNumber();
                 size_t length = args[1].asNumber();
                 std::string res = this->read(offset, length);
@@ -107,6 +112,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 2,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
                 std::string key = args[0].getString(runtime).utf8(runtime);
                 return this->insertRec(runtime, key, args[1]);
             }
@@ -117,6 +123,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 1,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
                 std::string key = args[0].getString(runtime).utf8(runtime);
                 return this->findRec(runtime, key);
             }
@@ -127,6 +134,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 0,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
                 return facebook::jsi::Value(this->clearStorage());
             }
         );
