@@ -26,15 +26,20 @@ set_target_properties(
     CXX_EXTENSIONS OFF
 )
 
+# React Native 0.71+ headers are handled via Prefab libraries (jsi, reactnative).
+# We need to make sure our generated code and core C++ code can see each other.
 target_include_directories(
     react-native-secure-db    PUBLIC
     ${PACKAGE_ROOT}/cpp
     src/main/cpp
-    generated/jni
+    # This is where SecureDBSpecJSI.h lives after codegen
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/jni
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/jni/react/renderer/components/SecureDBSpec
 )
 
 # Link against React Native's JSI and other core libraries
-# These are provided by the React Native Gradle plugin automatically
+# Prefab handles the header resolution for these automatically in most cases,
+# but we ensure they are linked here.
 target_link_libraries(
     react-native-secure-db
     jsi

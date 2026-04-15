@@ -31,6 +31,10 @@ android {
         }
     }
 
+    buildFeatures {
+        prefab true
+    }
+
     externalNativeBuild {
         cmake {
             path "CMakeLists.txt"
