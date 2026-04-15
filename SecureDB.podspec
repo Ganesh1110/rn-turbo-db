@@ -19,7 +19,8 @@ Pod::Spec.new do |s|
   # Folly config defines — FOLLY_HAS_COROUTINES=0 prevents 'folly/coro/Coroutine.h' not found
   # error on Xcode 26 Beta where the SDK does not ship that header yet.
   s.pod_target_xcconfig = {
-    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_HAS_COROUTINES=0"
+    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_HAS_COROUTINES=0",
+    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/cpp\""
   }
 
   install_modules_dependencies(s)

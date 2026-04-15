@@ -2,7 +2,7 @@
 #include "DBEngine.h"
 
 #ifdef __APPLE__
-#include "../ios/SecureCryptoIOS.h"
+#include "SecureCryptoIOS.h"
 #endif
 
 namespace facebook::react {
@@ -16,10 +16,9 @@ SecureDBImpl::SecureDBImpl(
 void SecureDBImpl::install(jsi::Runtime& rt) {
     std::unique_ptr<secure_db::SecureCryptoContext> crypto = nullptr;
 #ifdef __APPLE__
-    crypto = std::make_unique<secure_db::SecureCryptoContext>(std::make_unique<secure_db::SecureCryptoIOS>());
+    crypto = std::make_unique<secure_db::SecureCryptoIOS>();
 #else
-    // For Android, we'll need to pass the JavaVM to the constructor
-    // This is typically handled in the JNI layer
+    // For Android, installation is handled via JNI in SecureDBModule.cpp
 #endif
 
     secure_db::installDBEngine(rt, std::move(crypto));
