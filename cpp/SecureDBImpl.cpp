@@ -14,10 +14,12 @@ SecureDBImpl::SecureDBImpl(
 }
 
 void SecureDBImpl::install(jsi::Runtime& rt) {
-#ifdef __APPLE__
-    std::unique_ptr<secure_db::SecureCryptoContext> crypto = std::make_unique<secure_db::SecureCryptoIOS>();
-#else
     std::unique_ptr<secure_db::SecureCryptoContext> crypto = nullptr;
+#ifdef __APPLE__
+    crypto = std::make_unique<secure_db::SecureCryptoContext>(std::make_unique<secure_db::SecureCryptoIOS>());
+#else
+    // For Android, we'll need to pass the JavaVM to the constructor
+    // This is typically handled in the JNI layer
 #endif
 
     secure_db::installDBEngine(rt, std::move(crypto));

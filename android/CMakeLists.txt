@@ -4,9 +4,10 @@ project(SecureDB)
 set (CMAKE_VERBOSE_MAKEFILE ON)
 
 add_library(
-    react-native-secure-db    STATIC
+    react-native-secure-db    SHARED
     ../cpp/SecureDBImpl.cpp
     src/main/cpp/SecureCryptoAndroid.cpp
+    src/main/cpp/SecureDBModule.cpp
 )
 
 set_target_properties(
