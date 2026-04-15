@@ -140,6 +140,72 @@ facebook::jsi::Value DBEngine::get(
         );
     }
     
+    if (propName == "setMulti") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
+                return this->setMulti(runtime, args[0]);
+            }
+        );
+    }
+    
+    if (propName == "getMultiple") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
+                return this->getMultiple(runtime, args[0]);
+            }
+        );
+    }
+    
+    if (propName == "remove") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
+                std::string key = args[0].getString(runtime).utf8(runtime);
+                return facebook::jsi::Value(this->remove(key));
+            }
+        );
+    }
+    
+    if (propName == "rangeQuery") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 2,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
+                std::string startKey = args[0].getString(runtime).utf8(runtime);
+                std::string endKey = args[1].getString(runtime).utf8(runtime);
+                auto results = this->rangeQuery(runtime, startKey, endKey);
+                auto arr = facebook::jsi::Array(runtime, results.size());
+                for (size_t i = 0; i < results.size(); i++) {
+                    auto obj = facebook::jsi::Object(runtime);
+                    obj.setProperty(runtime, "key", facebook::jsi::String::createFromUtf8(runtime, results[i].first));
+                    obj.setProperty(runtime, "value", results[i].second);
+                    arr.setValueAtIndex(runtime, i, obj);
+                }
+                return arr;
+            }
+        );
+    }
+    
+    if (propName == "getAllKeys") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
+                auto keys = this->getAllKeys();
+                auto arr = facebook::jsi::Array(runtime, keys.size());
+                for (size_t i = 0; i < keys.size(); i++) {
+                    arr.setValueAtIndex(runtime, i, facebook::jsi::String::createFromUtf8(runtime, keys[i]));
+                }
+                return arr;
+            }
+        );
+    }
+    
     return facebook::jsi::Value::undefined();
 }
 
@@ -154,6 +220,11 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(facebook::jsi:
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "insertRec"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "findRec"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "clearStorage"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setMulti"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getMultiple"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "remove"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "rangeQuery"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getAllKeys"));
     return names;
 }
 
@@ -314,6 +385,80 @@ void installDBEngine(facebook::jsi::Runtime& runtime, std::unique_ptr<SecureCryp
         "NativeDB",
         facebook::jsi::Object::createFromHostObject(runtime, dbEngine)
     );
+}
+
+facebook::jsi::Value DBEngine::setMulti(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries) {
+    if (!entries.isObject()) {
+        return facebook::jsi::Value(false);
+    }
+    
+    facebook::jsi::Object obj = entries.asObject(runtime);
+    auto propNames = obj.getPropertyNames(runtime);
+    size_t count = propNames.size();
+    
+    for (size_t i = 0; i < count; i++) {
+        auto key = propNames.getValueAtIndex(runtime, i).asString(runtime);
+        auto value = obj.getProperty(runtime, key);
+        insertRec(runtime, key.utf8(runtime), value);
+    }
+    
+    return facebook::jsi::Value(true);
+}
+
+facebook::jsi::Value DBEngine::getMultiple(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys) {
+    if (!keys.isArray()) {
+        return facebook::jsi::Value::undefined();
+    }
+    
+    facebook::jsi::Array keyArray = keys.asArray(runtime);
+    size_t count = keyArray.size(runtime);
+    auto result = facebook::jsi::Object(runtime);
+    
+    for (size_t i = 0; i < count; i++) {
+        auto key = keyArray.getValueAtIndex(runtime, i).asString(runtime);
+        auto value = findRec(runtime, key.utf8(runtime));
+        result.setProperty(runtime, key, value);
+    }
+    
+    return result;
+}
+
+bool DBEngine::remove(const std::string& key) {
+    if (!btree_ || !pbtree_) return false;
+    
+    size_t offset = btree_->find(key);
+    if (offset == 0) return false;
+    
+    pbtree_->insert(key, 0);
+    return true;
+}
+
+std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
+    facebook::jsi::Runtime& runtime, 
+    const std::string& startKey, 
+    const std::string& endKey
+) {
+    std::vector<std::pair<std::string, facebook::jsi::Value>> results;
+    
+    if (!pbtree_) return results;
+    
+    auto rangeResults = pbtree_->range(startKey, endKey);
+    for (const auto& [key, offset] : rangeResults) {
+        if (offset > 0) {
+            auto value = findRec(runtime, key);
+            results.emplace_back(key, value);
+        }
+    }
+    
+    return results;
+}
+
+std::vector<std::string> DBEngine::getAllKeys() {
+    std::vector<std::string> keys;
+    
+    if (!btree_) return keys;
+    
+    return btree_->getAllKeys();
 }
 
 }

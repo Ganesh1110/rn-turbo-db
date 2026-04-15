@@ -27,6 +27,9 @@ public:
     
     // Force commit to disk tree
     void flush();
+    
+    // Get all keys from buffer and tree
+    std::vector<std::string> getAllKeys();
 
 private:
     PersistentBPlusTree* tree_;

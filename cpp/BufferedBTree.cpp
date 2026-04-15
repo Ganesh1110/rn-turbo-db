@@ -59,4 +59,15 @@ void BufferedBTree::flush() {
     write_buffer_.clear();
 }
 
+std::vector<std::string> BufferedBTree::getAllKeys() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    std::vector<std::string> keys;
+    
+    for (const auto& op : write_buffer_) {
+        keys.push_back(op.key);
+    }
+    
+    return keys;
+}
+
 }

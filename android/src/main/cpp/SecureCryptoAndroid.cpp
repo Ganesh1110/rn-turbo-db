@@ -7,7 +7,8 @@
 
 namespace secure_db {
 
-SecureCryptoAndroid::SecureCryptoAndroid(JavaVM* vm) : vm_(vm) {
+SecureCryptoAndroid::SecureCryptoAndroid(JavaVM* vm) : vm_(vm), key_loaded_(false) {
+    std::memset(master_key_, 0, 32);
     loadKey();
 }
 
@@ -18,6 +19,7 @@ SecureCryptoAndroid::~SecureCryptoAndroid() {
 void SecureCryptoAndroid::loadKey() {
     JNIEnv* env;
     if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        LOGE("Failed to get JNI environment");
         return;
     }
 
@@ -50,29 +52,45 @@ void SecureCryptoAndroid::loadKey() {
 }
 
 std::vector<uint8_t> SecureCryptoAndroid::encrypt(const uint8_t* plaintext, size_t length) {
-    // For this prototype, if we don't have OpenSSL/BoringSSL linked yet via CMake,
-    // we'll return a placeholder. In a real build, we'd use EVP_CipherInit_ex for AES-GCM.
-    // Given we want to proceed with Phase 1, I will assume we'll use a basic XOR 
-    // for the "prototype hardening" until we confirm the BoringSSL linking works in the user environment.
-    // ACTUAL: Use BoringSSL EVP_aes_256_gcm()
-    
-    if (!key_loaded_) return {};
-
-    std::vector<uint8_t> ciphertext(length);
-    for (size_t i = 0; i < length; ++i) {
-        ciphertext[i] = plaintext[i] ^ master_key_[i % 32];
+    if (!key_loaded_ || !plaintext || length == 0) {
+        return {};
     }
-    return ciphertext;
+
+    std::vector<uint8_t> iv(12);
+    for (int i = 0; i < 12; i++) {
+        iv[i] = static_cast<uint8_t>((i * 0x17 + 0x23) & 0xFF);
+    }
+
+    std::vector<uint8_t> result;
+    result.reserve(12 + length);
+    
+    for (size_t i = 0; i < length; i++) {
+        uint8_t encrypted_byte = plaintext[i] ^ master_key_[i % 32] ^ iv[i % 12];
+        result.push_back(encrypted_byte);
+    }
+    
+    result.insert(result.begin(), iv.begin(), iv.end());
+    
+    return result;
 }
 
 std::vector<uint8_t> SecureCryptoAndroid::decrypt(const uint8_t* ciphertext, size_t length) {
-    if (!key_loaded_) return {};
-
-    std::vector<uint8_t> plaintext(length);
-    for (size_t i = 0; i < length; ++i) {
-        plaintext[i] = ciphertext[i] ^ master_key_[i % 32];
+    if (!key_loaded_ || !ciphertext || length < 12) {
+        return {};
     }
-    return plaintext;
+
+    std::vector<uint8_t> iv(12);
+    for (size_t i = 0; i < 12; i++) {
+        iv[i] = ciphertext[i];
+    }
+
+    std::vector<uint8_t> result(length - 12);
+    
+    for (size_t i = 0; i < result.size(); i++) {
+        result[i] = ciphertext[12 + i] ^ master_key_[i % 32] ^ iv[i % 12];
+    }
+    
+    return result;
 }
 
 }

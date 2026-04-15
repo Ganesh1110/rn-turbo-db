@@ -10,8 +10,28 @@ declare const global: {
     findRec(key: string): any;
     clearStorage(): boolean;
     benchmark(): number;
+    setMulti(entries: Record<string, any>): boolean;
+    getMultiple(keys: string[]): Record<string, any>;
+    remove(key: string): boolean;
+    rangeQuery(
+      startKey: string,
+      endKey: string
+    ): Array<{ key: string; value: any }>;
+    getAllKeys(): string[];
   };
 };
+
+export interface SecureDBConfig {
+  path: string;
+  size?: number;
+  maxKeys?: number;
+  keySize?: number;
+}
+
+export interface RangeQueryResult {
+  key: string;
+  value: any;
+}
 
 export class SecureDB {
   static install() {
@@ -69,6 +89,31 @@ export class SecureDB {
   get<T = any>(key: string): T | undefined {
     this.ensureInitialized();
     return global.NativeDB.findRec(key);
+  }
+
+  setMulti(entries: Record<string, any>): boolean {
+    this.ensureInitialized();
+    return global.NativeDB.setMulti(entries);
+  }
+
+  getMultiple(keys: string[]): Record<string, any> {
+    this.ensureInitialized();
+    return global.NativeDB.getMultiple(keys);
+  }
+
+  remove(key: string): boolean {
+    this.ensureInitialized();
+    return global.NativeDB.remove(key);
+  }
+
+  rangeQuery(startKey: string, endKey: string): RangeQueryResult[] {
+    this.ensureInitialized();
+    return global.NativeDB.rangeQuery(startKey, endKey);
+  }
+
+  getAllKeys(): string[] {
+    this.ensureInitialized();
+    return global.NativeDB.getAllKeys();
   }
 
   clear(): boolean {

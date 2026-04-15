@@ -47,6 +47,20 @@ public:
     facebook::jsi::Value findRec(facebook::jsi::Runtime& runtime, const std::string& key);
     bool clearStorage();
     
+    // Batch Operations
+    facebook::jsi::Value setMulti(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries);
+    facebook::jsi::Value getMultiple(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys);
+    bool remove(const std::string& key);
+    
+    // Query Operations
+    std::vector<std::pair<std::string, facebook::jsi::Value>> rangeQuery(
+        facebook::jsi::Runtime& runtime, 
+        const std::string& startKey, 
+        const std::string& endKey
+    );
+    
+    std::vector<std::string> getAllKeys();
+    
 private:
     mutable std::shared_mutex rw_mutex_;
     std::chrono::high_resolution_clock::time_point start_time_;

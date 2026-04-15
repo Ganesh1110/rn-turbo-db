@@ -1,10 +1,10 @@
 #pragma once
 #include "../cpp/SecureCryptoContext.h"
 #include <string>
+#include <vector>
 
 namespace secure_db {
 
-// The iOS wrapper connecting C++ interfaces directly into Apple's CommonCrypto frameworks.
 class SecureCryptoIOS : public SecureCryptoContext {
 public:
     SecureCryptoIOS();
@@ -14,8 +14,11 @@ public:
     std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t length) override;
 
 private:
-    uint8_t static_key_[32]; // AES-256 Key
-    uint8_t static_iv_[16];  // Initialization Vector
+    uint8_t key_[32];
+    uint8_t iv_[16];
+
+    void loadOrCreateKeyFromKeychain();
+    void generateRandomIV();
 };
 
 }

@@ -24,6 +24,11 @@ uint32_t calculate_crc32(const uint8_t* data, size_t length) {
 PersistentBPlusTree::PersistentBPlusTree(MMapRegion* mmap, WALManager* wal) 
     : mmap_(mmap), wal_(wal) {}
 
+void PersistentBPlusTree::initWithConfig(const BTreeNodeConfig& config) {
+    config_ = config;
+    init();
+}
+
 void PersistentBPlusTree::init() {
     std::string header_bytes = mmap_->read(0, sizeof(TreeHeader));
     std::memcpy(&header_, header_bytes.data(), sizeof(TreeHeader));
@@ -221,6 +226,32 @@ size_t PersistentBPlusTree::find(const std::string& key) {
         }
         curr_off = node.children[i];
     }
+}
+
+std::vector<std::pair<std::string, size_t>> PersistentBPlusTree::range(const std::string& start_key, const std::string& end_key) {
+    std::vector<std::pair<std::string, size_t>> results;
+    
+    if (header_.root_offset == 0) return results;
+    
+    std::function<void(uint64_t)> traverse = [&](uint64_t node_off) {
+        BTreeNode node = read_node(node_off);
+        
+        for (uint32_t i = 0; i < node.num_keys; i++) {
+            std::string key(node.keys[i]);
+            if (key >= start_key && key <= end_key) {
+                results.emplace_back(key, node.values[i]);
+            }
+        }
+        
+        if (!node.is_leaf) {
+            for (uint32_t i = 0; i <= node.num_keys; i++) {
+                traverse(node.children[i]);
+            }
+        }
+    };
+    
+    traverse(header_.root_offset);
+    return results;
 }
 
 }
