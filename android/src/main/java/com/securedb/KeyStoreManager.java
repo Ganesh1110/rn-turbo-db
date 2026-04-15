@@ -10,6 +10,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import java.security.SecureRandom;
 import android.util.Base64;
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 
 public class KeyStoreManager {
     private static final String KEY_ALIAS = "com.securedb.masterkey";
