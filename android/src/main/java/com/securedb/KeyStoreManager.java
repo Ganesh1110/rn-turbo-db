@@ -79,20 +79,24 @@ public class KeyStoreManager {
     private static byte[] loadDerivedKey(SecretKey hardwareKey) {
         if (staticContext == null) return null;
         File keyFile = new File(staticContext.getFilesDir(), "securedb.key");
-        if (!keyFile.exists()) return null;
+        if (!keyFile.exists() || keyFile.length() <= GCM_IV_LENGTH) return null;
 
         try (FileInputStream fis = new FileInputStream(keyFile)) {
             byte[] iv = new byte[GCM_IV_LENGTH];
-            fis.read(iv);
+            int readIv = fis.read(iv);
+            if (readIv != GCM_IV_LENGTH) return null;
             
-            byte[] encryptedKey = new byte[(int) keyFile.length() - GCM_IV_LENGTH];
-            fis.read(encryptedKey);
+            int encryptedLen = (int) keyFile.length() - GCM_IV_LENGTH;
+            byte[] encryptedKey = new byte[encryptedLen];
+            int readEnc = fis.read(encryptedKey);
+            if (readEnc != encryptedLen) return null;
 
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
             cipher.init(Cipher.DECRYPT_MODE, hardwareKey, parameterSpec);
             return cipher.doFinal(encryptedKey);
         } catch (Exception e) {
+            e.printStackTrace();
             return null;
         }
     }

@@ -19,6 +19,7 @@ declare const global: {
       endKey: string
     ): Array<{ key: string; value: any }>;
     getAllKeys(): string[];
+    flush(): void;
   };
 };
 
@@ -134,6 +135,11 @@ export class SecureDB {
   clear(): boolean {
     this.ensureInitialized();
     return global.NativeDB.clearStorage();
+  }
+
+  flush(): void {
+    this.ensureInitialized();
+    global.NativeDB.flush();
   }
 
   benchmark(): number {

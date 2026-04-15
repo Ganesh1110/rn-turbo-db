@@ -96,6 +96,10 @@ void WALManager::recover(MMapRegion* mmap) {
         if (reader.gcount() < sizeof(WALRecordHeader)) break;
 
         if (header.type == WALRecordType::PAGE_WRITE) {
+            if (header.length < sizeof(WALRecordHeader)) {
+                std::cerr << "WAL Recovery: Invalid record length. Skipping.\n";
+                continue;
+            }
             std::string payload(header.length - sizeof(WALRecordHeader), '\0');
             reader.read(payload.data(), payload.size());
             

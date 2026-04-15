@@ -21,7 +21,12 @@ public class SecureDBModule extends NativeSecureDBSpec {
     }
 
     static {
-        System.loadLibrary("react-native-secure-db");
+        try {
+            System.loadLibrary("sodium");
+            System.loadLibrary("react-native-secure-db");
+        } catch (UnsatisfiedLinkError e) {
+            android.util.Log.e("SecureDB", "Failed to load native libraries", e);
+        }
     }
 
     private native void nativeInstall(long jsiRuntimePointer);

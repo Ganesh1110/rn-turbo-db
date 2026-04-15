@@ -61,13 +61,46 @@ void BufferedBTree::flush() {
 
 std::vector<std::string> BufferedBTree::getAllKeys() {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
-    std::vector<std::string> keys;
+    std::vector<std::string> disk_keys = tree_->getAllKeys();
     
+    // Combine with buffer (and handle duplicates)
+    std::vector<std::string> results = disk_keys;
     for (const auto& op : write_buffer_) {
-        keys.push_back(op.key);
+        if (std::find(results.begin(), results.end(), op.key) == results.end()) {
+            results.push_back(op.key);
+        }
+    }
+    return results;
+}
+
+std::vector<std::pair<std::string, size_t>> BufferedBTree::range(const std::string& start_key, const std::string& end_key) {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    auto results = tree_->range(start_key, end_key);
+    
+    // Merge with buffer
+    for (const auto& op : write_buffer_) {
+        if (op.key >= start_key && op.key <= end_key) {
+            // Update if already in results, else insert
+            bool found = false;
+            for (auto& res : results) {
+                if (res.first == op.key) {
+                    res.second = op.data_offset;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                results.push_back({op.key, op.data_offset});
+            }
+        }
     }
     
-    return keys;
+    // Sort results as it might be unordered due to buffer merge
+    std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+    
+    return results;
 }
 
 }

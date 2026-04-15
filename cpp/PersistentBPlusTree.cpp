@@ -154,7 +154,6 @@ void PersistentBPlusTree::split_child(uint64_t parent_off, BTreeNode& parent, ui
         }
     }
     
-    uint32_t old_child_keys = child.num_keys;
     child.num_keys = t;
     
     for (uint32_t j = parent.num_keys; j > child_idx; j--) {
@@ -180,19 +179,26 @@ void PersistentBPlusTree::split_child(uint64_t parent_off, BTreeNode& parent, ui
 
 void PersistentBPlusTree::insert_non_full(uint64_t node_off, const std::string& key, size_t data_offset) {
     BTreeNode node = read_node(node_off);
-    int i = node.num_keys - 1;
     
     if (node.is_leaf) {
-        while (i >= 0 && key < std::string(node.keys[i])) {
-            std::strncpy(node.keys[i + 1], node.keys[i], 63);
-            node.keys[i + 1][63] = '\0';
-            node.values[i + 1] = node.values[i];
-            i--;
+        int i = node.num_keys - 1;
+        // Check if key already exists first
+        bool found = false;
+        for (uint32_t j = 0; j < node.num_keys; j++) {
+            if (key == std::string(node.keys[j])) {
+                node.values[j] = data_offset;
+                found = true;
+                break;
+            }
         }
         
-        if (i >= 0 && key == std::string(node.keys[i])) {
-            node.values[i] = data_offset;
-        } else {
+        if (!found) {
+            while (i >= 0 && key < std::string(node.keys[i])) {
+                std::strncpy(node.keys[i + 1], node.keys[i], 63);
+                node.keys[i + 1][63] = '\0';
+                node.values[i + 1] = node.values[i];
+                i--;
+            }
             std::strncpy(node.keys[i + 1], key.c_str(), 63);
             node.keys[i + 1][63] = '\0';
             node.values[i + 1] = data_offset;
@@ -200,6 +206,7 @@ void PersistentBPlusTree::insert_non_full(uint64_t node_off, const std::string& 
         }
         write_node(node_off, node);
     } else {
+        int i = node.num_keys - 1;
         while (i >= 0 && key < std::string(node.keys[i])) {
             i--;
         }
@@ -261,6 +268,28 @@ std::vector<std::pair<std::string, size_t>> PersistentBPlusTree::range(const std
     
     traverse(header_.root_offset);
     return results;
+}
+
+std::vector<std::string> PersistentBPlusTree::getAllKeys() {
+    std::vector<std::string> keys;
+    if (header_.root_offset == 0) return keys;
+    
+    std::function<void(uint64_t)> traverse = [&](uint64_t node_off) {
+        if (node_off == 0) return;
+        BTreeNode node = read_node(node_off);
+        
+        for (uint32_t i = 0; i <= node.num_keys; i++) {
+            if (!node.is_leaf) {
+                traverse(node.children[i]);
+            }
+            if (i < node.num_keys) {
+                keys.push_back(std::string(node.keys[i]));
+            }
+        }
+    };
+    
+    traverse(header_.root_offset);
+    return keys;
 }
 
 }

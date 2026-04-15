@@ -51,6 +51,8 @@ public:
     
     std::vector<std::pair<std::string, size_t>> range(const std::string& start_key, const std::string& end_key);
     
+    std::vector<std::string> getAllKeys();
+    
     void checkpoint();
 
     const TreeHeader& getHeader() const { return header_; }

@@ -46,6 +46,7 @@ public:
     facebook::jsi::Value insertRec(facebook::jsi::Runtime& runtime, const std::string& key, const facebook::jsi::Value& obj);
     facebook::jsi::Value findRec(facebook::jsi::Runtime& runtime, const std::string& key);
     bool clearStorage();
+    void flush();
     
     // Batch Operations
     facebook::jsi::Value setMulti(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries);

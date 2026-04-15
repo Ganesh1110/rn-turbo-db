@@ -31,6 +31,9 @@ public:
     // Get all keys from buffer and tree
     std::vector<std::string> getAllKeys();
 
+    // Range query across buffer and disk tree
+    std::vector<std::pair<std::string, size_t>> range(const std::string& start_key, const std::string& end_key);
+
 private:
     PersistentBPlusTree* tree_;
     std::deque<InsertOperation> write_buffer_;

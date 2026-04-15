@@ -36,11 +36,19 @@ Java_com_securedb_SecureDBModule_nativeInstall(JNIEnv *env, jobject thiz, jlong 
     auto runtime = reinterpret_cast<jsi::Runtime *>(jsi_runtime_pointer);
     
     if (runtime) {
-        // Create the unified Libsodium-based crypto context
-        auto crypto = std::make_unique<secure_db::SodiumCryptoContext>();
-        crypto->setMasterKey(getMasterKeyFromJava(env));
-        
-        // Install the DB Engine into the JSI runtime
-        secure_db::installDBEngine(*runtime, std::move(crypto));
+        try {
+            JavaVM *vm;
+            env->GetJavaVM(&vm);
+            
+            // Create the unified Libsodium-based crypto context
+            auto crypto = std::make_unique<secure_db::SodiumCryptoContext>();
+            crypto->setMasterKey(getMasterKeyFromJava(env));
+            
+            // Install the DB Engine into the JSI runtime
+            secure_db::installDBEngine(*runtime, std::move(crypto));
+        } catch (const std::exception& e) {
+            jclass xcls = env->FindClass("java/lang/RuntimeException");
+            if (xcls) env->ThrowNew(xcls, e.what());
+        }
     }
 }

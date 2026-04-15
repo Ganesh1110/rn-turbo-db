@@ -221,6 +221,17 @@ facebook::jsi::Value DBEngine::get(
         );
     }
     
+    if (propName == "flush") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::unique_lock lock(rw_mutex_);
+                this->flush();
+                return facebook::jsi::Value::undefined();
+            }
+        );
+    }
+    
     return facebook::jsi::Value::undefined();
 }
 
@@ -240,6 +251,8 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(facebook::jsi:
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "remove"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "rangeQuery"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getAllKeys"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "deleteAll"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "flush"));
     return names;
 }
 
@@ -400,10 +413,13 @@ bool DBEngine::clearStorage() {
     std::string path = mmap_->getPath();
     size_t size = mmap_->getSize();
     
-    // 1. Close current mapping
+    // 1. Close current mapping and reset all managers
     mmap_->close();
     btree_.reset();
     pbtree_.reset();
+    if (wal_) {
+        wal_.reset();
+    }
     
     // 2. Remove files
     std::remove(path.c_str());
@@ -485,9 +501,9 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
 ) {
     std::vector<std::pair<std::string, facebook::jsi::Value>> results;
     
-    if (!pbtree_) return results;
+    if (!btree_) return results;
     
-    auto rangeResults = pbtree_->range(startKey, endKey);
+    auto rangeResults = btree_->range(startKey, endKey);
     for (const auto& [key, offset] : rangeResults) {
         if (offset > 0) {
             auto value = findRec(runtime, key);
@@ -499,15 +515,18 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
 }
 
 std::vector<std::string> DBEngine::getAllKeys() {
-    std::vector<std::string> keys;
-    
-    if (!btree_) return keys;
-    
+    if (!btree_) return {};
     return btree_->getAllKeys();
 }
 
 bool DBEngine::deleteAll() {
     return clearStorage();
+}
+
+void DBEngine::flush() {
+    if (btree_) {
+        btree_->flush();
+    }
 }
 
 }
