@@ -169,11 +169,7 @@ export default function App() {
   const [rangeStart, setRangeStart] = useState('a');
   const [rangeEnd, setRangeEnd] = useState('z');
 
-  const db = useMemo(() => {
-    const docPath = SecureDB.getDocumentsDirectory();
-    const dbFile = `${docPath}/secure_v1.db`;
-    return new SecureDB(dbFile, 10 * 1024 * 1024);
-  }, []);
+  const [db, setDb] = useState<SecureDB | null>(null);
 
   const refreshKeys = useCallback(() => {
     if (!db) return;
