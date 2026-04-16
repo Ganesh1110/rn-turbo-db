@@ -10,8 +10,17 @@ import {
   Alert,
   ActivityIndicator,
   Platform,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
 import { SecureDB } from 'react-native-secure-db';
+
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 const BenchmarkPage = () => {
   const [results, setResults] = useState<number[]>([]);
@@ -23,6 +32,7 @@ const BenchmarkPage = () => {
   const runBenchmark = async () => {
     try {
       setIsRunning(true);
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setResults([]);
 
       const docsDir = SecureDB.getDocumentsDirectory();
@@ -62,6 +72,7 @@ const BenchmarkPage = () => {
       secureDB.clear();
       times.push(Date.now() - deleteStart);
 
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
       setResults(times);
     } catch (e) {
       console.error('Benchmark Error:', e);
@@ -74,21 +85,38 @@ const BenchmarkPage = () => {
   const formatTime = (ms: number | undefined) =>
     ms === undefined ? '-' : `${ms}ms`;
 
-  const Row = ({ label, idx }: { label: string; idx: number }) => (
-    <View style={styles.resultRow}>
-      <Text style={styles.resultLabel}>{label}</Text>
-      <Text style={[styles.resultValue, styles.secureDBColor]}>
-        {formatTime(results[idx])}
-      </Text>
-    </View>
-  );
+  const maxVal = useMemo(() => Math.max(...results, 1), [results]);
+
+  const Row = ({ label, idx }: { label: string; idx: number }) => {
+    const val = results[idx] || 0;
+    const widthPercent = results.length > 0 ? (val / maxVal) * 100 : 0;
+
+    return (
+      <View style={styles.resultRowContainer}>
+        <View style={styles.resultLabelRow}>
+          <Text style={styles.resultLabel}>{label}</Text>
+          <Text style={[styles.resultValue, styles.secureDBColor]}>
+            {formatTime(results[idx])}
+          </Text>
+        </View>
+        <View style={styles.barBackground}>
+          <View
+            style={[
+              styles.barForeground,
+              { width: `${Math.max(widthPercent, 2)}%` },
+            ]}
+          />
+        </View>
+      </View>
+    );
+  };
 
   return (
     <View style={styles.benchmarkCard}>
       <View style={styles.benchmarkHeader}>
-        <Text style={styles.cardTitle}>Performance Lab</Text>
+        <Text style={styles.cardTitle}>Performance Analytics</Text>
         <Text style={styles.benchmarkSubtitle}>
-          {NUM_OPERATIONS} records | {NUM_QUERIES} reads
+          {NUM_OPERATIONS} ops | {NUM_QUERIES} queries
         </Text>
       </View>
 
@@ -103,28 +131,22 @@ const BenchmarkPage = () => {
         {isRunning ? (
           <ActivityIndicator size="small" color="#fff" />
         ) : (
-          <Text style={styles.benchmarkButtonText}>Run Native Benchmark</Text>
+          <Text style={styles.benchmarkButtonText}>⚡ Start Native Engine</Text>
         )}
       </TouchableOpacity>
 
       <View style={styles.resultTable}>
-        <View style={styles.resultHeader}>
-          <Text style={[styles.resultLabel, { color: '#94A3B8' }]}>
-            Operation
-          </Text>
-          <Text style={styles.resultHeaderCell}>Duration</Text>
-        </View>
-        <Row label="Bulk Insert" idx={0} />
-        <Row label="Random Read" idx={1} />
-        <Row label="Range Query" idx={2} />
-        <Row label="Bulk Delete" idx={3} />
+        <Row label="Bulk Atomic Insert" idx={0} />
+        <Row label="Random JSI Read" idx={1} />
+        <Row label="B-Tree Range Query" idx={2} />
+        <Row label="Storage Purge" idx={3} />
       </View>
 
       {results.length > 0 && (
         <View style={styles.winnerBanner}>
           <Text style={styles.winnerText}>
-            ⚡ Turbo Mode Active: Average{' '}
-            {(results.reduce((a, b) => a + b, 0) / 4).toFixed(1)}ms per sequence
+            ⚡ Turbo Mode Active: Total{' '}
+            {results.reduce((a, b) => a + b, 0).toFixed(0)}ms latency
           </Text>
         </View>
       )}
@@ -154,7 +176,9 @@ export default function App() {
   }, []);
 
   const refreshKeys = useCallback(() => {
+    if (!db) return;
     try {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setAllKeys(db.getAllKeys());
     } catch (e) {
       console.error('Refresh Keys Error:', e);
@@ -163,9 +187,17 @@ export default function App() {
 
   useEffect(() => {
     SecureDB.install();
-    setDbPath(SecureDB.getDocumentsDirectory());
-    refreshKeys();
-  }, [refreshKeys]);
+    const docPath = SecureDB.getDocumentsDirectory();
+    setDbPath(docPath);
+    const dbFile = `${docPath}/secure_v1.db`;
+    setDb(new SecureDB(dbFile, 10 * 1024 * 1024));
+  }, []);
+
+  useEffect(() => {
+    if (db) {
+      refreshKeys();
+    }
+  }, [db, refreshKeys]);
 
   const handleSet = () => {
     if (!key) return Alert.alert('Error', 'Please enter a key');
@@ -174,14 +206,14 @@ export default function App() {
         value.startsWith('{') || value.startsWith('[')
           ? JSON.parse(value)
           : value;
-      const success = db.set(key, data);
+      const success = db?.set(key, data);
       if (success) {
         setKey('');
         setValue('');
         setGetResult('');
         refreshKeys();
         setStatusType('success');
-        setStatusMessage(`Saved: ${key}`);
+        setStatusMessage(`💾 Saved: ${key}`);
         setTimeout(() => setStatusMessage(''), 2000);
       } else {
         setStatusType('error');
@@ -209,29 +241,48 @@ export default function App() {
     } else {
       setGetResult(JSON.stringify(res, null, 2));
       setStatusType('info');
-      setStatusMessage(`Found: ${key}`);
+      setStatusMessage(`🔍 Found: ${key}`);
       setTimeout(() => setStatusMessage(''), 2000);
     }
   };
 
   const handleDel = () => {
-    if (!db) return;
     if (!key) {
       setStatusType('error');
       setStatusMessage('Please enter a key');
       return;
     }
-    const result = db.del(key);
-    if (result) {
-      setGetResult('');
-      refreshKeys();
-      setStatusType('success');
-      setStatusMessage(`Deleted: ${key}`);
-      setTimeout(() => setStatusMessage(''), 2000);
-    } else {
+    if (!db) {
       setStatusType('error');
-      setStatusMessage(`Key not found: ${key}`);
+      setStatusMessage('Database not initialized');
+      return;
     }
+    Alert.alert('Delete Key', `Are you sure you want to delete "${key}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          try {
+            const result = db.del(key);
+            if (result) {
+              setGetResult('');
+              refreshKeys();
+              setStatusType('success');
+              setStatusMessage(`🗑️ Deleted: ${key}`);
+              setTimeout(() => setStatusMessage(''), 2000);
+            } else {
+              setStatusType('error');
+              setStatusMessage(`Key not found: ${key}`);
+            }
+          } catch (e) {
+            setStatusType('error');
+            setStatusMessage(`Error: ${String(e)}`);
+            setTimeout(() => setStatusMessage(''), 3000);
+          }
+        },
+      },
+    ]);
   };
 
   const handleRange = () => {
@@ -239,8 +290,8 @@ export default function App() {
       Alert.alert('Error', 'Please enter start and end keys');
       return;
     }
-    const results = db.rangeQuery(rangeStart, rangeEnd);
-    Alert.alert('Range Query', `Found ${results.length} items`, [
+    const results = db?.rangeQuery(rangeStart, rangeEnd);
+    Alert.alert('Range Query', `Found ${results?.length} items`, [
       { text: 'OK' },
       {
         text: 'View Details',
@@ -255,7 +306,7 @@ export default function App() {
     for (let i = 0; i < 500; i++) {
       batch[`turbo_${i}`] = { id: i, ts: Date.now() };
     }
-    db.setMulti(batch);
+    db?.setMulti(batch);
     const elapsed = Date.now() - start;
     refreshKeys();
     Alert.alert('Turbo Success', `Inserted 500 records in ${elapsed}ms`);
@@ -266,7 +317,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <Text style={styles.title}>SecureDB</Text>
-          <Text style={styles.subtitle}>Native Turbo Engine</Text>
+          <Text style={styles.subtitle}>Unified Crypto + JSI B-Tree</Text>
         </View>
 
         <View style={styles.tabContainer}>
@@ -274,7 +325,12 @@ export default function App() {
             <TouchableOpacity
               key={tab}
               style={[styles.tab, activeTab === tab && styles.activeTab]}
-              onPress={() => setActiveTab(tab as any)}
+              onPress={() => {
+                LayoutAnimation.configureNext(
+                  LayoutAnimation.Presets.easeInEaseOut
+                );
+                setActiveTab(tab as any);
+              }}
             >
               <Text
                 style={[
@@ -292,7 +348,7 @@ export default function App() {
           <>
             <View style={styles.metaCard}>
               <Text style={styles.metaLabel}>
-                PATH: {Platform.OS.toUpperCase()}
+                ACTIVE REALM: {Platform.OS.toUpperCase()}
               </Text>
               <Text style={styles.metaValue} numberOfLines={1}>
                 {dbPath}
@@ -323,41 +379,41 @@ export default function App() {
             ) : null}
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Instant Access</Text>
+              <Text style={styles.cardTitle}>Rapid I/O Interface</Text>
               <TextInput
                 style={styles.input}
                 value={key}
                 onChangeText={setKey}
-                placeholder="Key..."
+                placeholder="Entry key..."
                 placeholderTextColor="#475569"
               />
               <TextInput
-                style={[styles.input, { height: 60 }]}
+                style={[styles.input, { height: 80 }]}
                 value={value}
                 onChangeText={setValue}
-                placeholder="Value (String or JSON)..."
+                placeholder="Payload (Text or JSON)..."
                 placeholderTextColor="#475569"
                 multiline
               />
 
               <View style={styles.buttonRow}>
                 <TouchableOpacity style={styles.button} onPress={handleSet}>
-                  <Text style={styles.buttonText}>SET</Text>
+                  <Text style={styles.buttonText}>💾 SET</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.button, { backgroundColor: '#EF4444' }]}
+                  style={[styles.button, { backgroundColor: '#3B82F6' }]}
                   onPress={handleGet}
                 >
                   <Text style={[styles.buttonText, { color: '#fff' }]}>
-                    GET
+                    🔍 GET
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.button, { backgroundColor: '#EF4444' }]}
+                  style={[styles.button, { backgroundColor: '#F59E0B' }]}
                   onPress={handleDel}
                 >
                   <Text style={[styles.buttonText, { color: '#fff' }]}>
-                    DEL
+                    🗑️ DEL
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -365,6 +421,12 @@ export default function App() {
 
             {getResult !== '' && (
               <View style={styles.resultCard}>
+                <View style={styles.rowBetween}>
+                  <Text style={styles.resultLabel}>Output Stream</Text>
+                  <TouchableOpacity onPress={() => setGetResult('')}>
+                    <Text style={styles.statusClose}>×</Text>
+                  </TouchableOpacity>
+                </View>
                 <Text style={styles.resultText}>{getResult}</Text>
               </View>
             )}
@@ -372,9 +434,14 @@ export default function App() {
             <View style={styles.card}>
               <TouchableOpacity
                 style={styles.advancedToggle}
-                onPress={() => setShowAdvanced(!showAdvanced)}
+                onPress={() => {
+                  LayoutAnimation.configureNext(
+                    LayoutAnimation.Presets.easeInEaseOut
+                  );
+                  setShowAdvanced(!showAdvanced);
+                }}
               >
-                <Text style={styles.cardTitle}>Turbo Extensions</Text>
+                <Text style={styles.cardTitle}>Advanced Toolset</Text>
                 <Text style={styles.toggleArrow}>
                   {showAdvanced ? '▼' : '▲'}
                 </Text>
@@ -382,19 +449,19 @@ export default function App() {
 
               {showAdvanced && (
                 <View style={styles.advancedContent}>
-                  <Text style={styles.inputLabel}>Range Explorer</Text>
+                  <Text style={styles.inputLabel}>Range Scan</Text>
                   <View style={styles.buttonRow}>
                     <TextInput
                       style={[styles.input, { flex: 1, marginBottom: 0 }]}
                       value={rangeStart}
                       onChangeText={setRangeStart}
-                      placeholder="Start"
+                      placeholder="Min"
                     />
                     <TextInput
                       style={[styles.input, { flex: 1, marginBottom: 0 }]}
                       value={rangeEnd}
                       onChangeText={setRangeEnd}
-                      placeholder="End"
+                      placeholder="Max"
                     />
                   </View>
                   <TouchableOpacity
@@ -402,30 +469,32 @@ export default function App() {
                     onPress={handleRange}
                   >
                     <Text style={styles.advancedButtonText}>
-                      Execute Native Range Query
+                      🔭 B-Tree Scan
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.advancedButton, { borderColor: '#22C55E' }]}
+                    style={[styles.advancedButton, { borderColor: '#10B981' }]}
                     onPress={handleTurboInsert}
                   >
                     <Text
-                      style={[styles.advancedButtonText, { color: '#22C55E' }]}
+                      style={[styles.advancedButtonText, { color: '#10B981' }]}
                     >
-                      Bulk Turbo Insert (500 ops)
+                      🚀 Bulk Stress Test (500)
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.advancedButton, { borderColor: '#EF4444' }]}
                     onPress={() => {
-                      db.clear();
+                      db?.clear();
                       refreshKeys();
+                      setStatusMessage('💥 Database Wiped');
+                      setTimeout(() => setStatusMessage(''), 2000);
                     }}
                   >
                     <Text
                       style={[styles.advancedButtonText, { color: '#EF4444' }]}
                     >
-                      Wipe Database
+                      ☢️ Wipe Storage
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -435,38 +504,53 @@ export default function App() {
             <View style={styles.card}>
               <View style={styles.rowBetween}>
                 <Text style={styles.cardTitle}>
-                  Index Map ({allKeys.length})
+                  Live Index ({allKeys.length})
                 </Text>
                 <TouchableOpacity onPress={refreshKeys}>
-                  <Text style={styles.refreshText}>↻ Sync</Text>
+                  <Text style={styles.refreshText}>↻ Refresh</Text>
                 </TouchableOpacity>
               </View>
               <View style={styles.keyList}>
                 {allKeys.length === 0 ? (
-                  <Text style={styles.emptyText}>Index empty.</Text>
+                  <Text style={styles.emptyText}>Index is currently void.</Text>
                 ) : (
                   allKeys.slice(0, 15).map((k) => (
-                    <TouchableOpacity
-                      key={k}
-                      onPress={() => setKey(k)}
-                      style={styles.keyItem}
-                    >
-                      <Text style={styles.keyText}>
-                        0x
-                        {Math.abs(
-                          k.split('').reduce((a, b) => {
-                            a = (a << 5) - a + b.charCodeAt(0);
-                            return a & a;
-                          }, 0)
-                        ).toString(16)}{' '}
-                        → {k}
-                      </Text>
-                    </TouchableOpacity>
+                    <View key={k} style={styles.keyItem}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setKey(k);
+                          handleGet();
+                        }}
+                        style={{ flex: 1 }}
+                      >
+                        <Text style={styles.keyText}>
+                          🔑 {k.length > 20 ? k.substring(0, 17) + '...' : k}
+                        </Text>
+                      </TouchableOpacity>
+                      <View style={styles.keyActions}>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setKey(k);
+                            handleGet();
+                          }}
+                        >
+                          <Text style={styles.actionIcon}>🔍</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setKey(k);
+                            handleDel();
+                          }}
+                        >
+                          <Text style={styles.actionIcon}>🗑️</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
                   ))
                 )}
                 {allKeys.length > 15 && (
                   <Text style={styles.moreKeysText}>
-                    + {allKeys.length - 15} items hidden
+                    + {allKeys.length - 15} entries not shown
                   </Text>
                 )}
               </View>
@@ -482,49 +566,55 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#020617' },
-  scrollContent: { padding: 20 },
-  header: { alignItems: 'center', marginVertical: 30 },
+  scrollContent: { padding: 20, paddingBottom: 40 },
+  header: { alignItems: 'center', marginVertical: 35 },
   title: {
-    fontSize: 48,
+    fontSize: 44,
     fontWeight: '900',
     color: '#F8FAFC',
     letterSpacing: -2,
+    textShadowColor: 'rgba(56, 189, 248, 0.3)',
+    textShadowOffset: { width: 0, height: 4 },
+    textShadowRadius: 10,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#38BDF8',
-    fontWeight: 'bold',
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 2,
+    letterSpacing: 3,
+    marginTop: 4,
   },
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#0F172A',
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 6,
     marginBottom: 25,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.03)',
   },
-  tab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 12 },
+  tab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 14 },
   activeTab: {
     backgroundColor: '#1E293B',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: 'rgba(56, 189, 248, 0.2)',
   },
   tabText: { color: '#64748B', fontSize: 11, fontWeight: '800' },
   activeTabText: { color: '#F8FAFC' },
   metaCard: {
     backgroundColor: '#0F172A',
-    borderRadius: 16,
-    padding: 15,
+    borderRadius: 20,
+    padding: 16,
     marginBottom: 20,
-    borderLeftWidth: 3,
+    borderLeftWidth: 4,
     borderLeftColor: '#38BDF8',
   },
   metaLabel: { color: '#475569', fontSize: 10, fontWeight: '900' },
   metaValue: {
     color: '#94A3B8',
-    fontSize: 12,
-    marginTop: 4,
+    fontSize: 11,
+    marginTop: 6,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   card: {
@@ -532,19 +622,19 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#1E293B',
+    borderColor: 'rgba(255,255,255,0.04)',
     marginBottom: 20,
   },
   cardTitle: {
     color: '#F8FAFC',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
-    marginBottom: 15,
+    marginBottom: 18,
   },
   input: {
     backgroundColor: '#020617',
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 14,
+    padding: 16,
     color: '#F8FAFC',
     fontSize: 15,
     marginBottom: 15,
@@ -555,29 +645,36 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 11,
     fontWeight: '700',
-    marginBottom: 8,
+    marginBottom: 10,
     textTransform: 'uppercase',
   },
-  buttonRow: { flexDirection: 'row', gap: 10 },
+  buttonRow: { flexDirection: 'row', gap: 12 },
   button: {
     flex: 1,
     backgroundColor: '#F8FAFC',
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 15,
+    borderRadius: 14,
     alignItems: 'center',
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   buttonText: { color: '#020617', fontSize: 13, fontWeight: '900' },
   resultCard: {
     backgroundColor: 'rgba(56, 189, 248, 0.05)',
-    padding: 15,
-    borderRadius: 16,
+    padding: 18,
+    borderRadius: 20,
     marginBottom: 20,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.1)',
+    borderColor: 'rgba(56, 189, 248, 0.15)',
   },
   resultText: {
     color: '#38BDF8',
     fontSize: 13,
+    lineHeight: 18,
+    marginTop: 10,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   advancedToggle: {
@@ -585,21 +682,21 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  toggleArrow: { color: '#475569', fontSize: 10 },
+  toggleArrow: { color: '#475569', fontSize: 12 },
   advancedContent: { marginTop: 20 },
   advancedButton: {
     backgroundColor: '#020617',
     padding: 16,
     borderRadius: 14,
-    marginTop: 10,
+    marginTop: 12,
     borderWidth: 1,
-    borderColor: '#38BDF8',
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    alignItems: 'center',
   },
   advancedButtonText: {
     color: '#38BDF8',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
-    textAlign: 'center',
   },
   rowBetween: {
     flexDirection: 'row',
@@ -607,92 +704,115 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 15,
   },
-  refreshText: { color: '#38BDF8', fontSize: 12, fontWeight: '700' },
+  refreshText: { color: '#38BDF8', fontSize: 13, fontWeight: '800' },
   keyList: { marginTop: 5 },
   keyItem: {
-    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    borderBottomColor: 'rgba(255,255,255,0.03)',
+  },
+  keyActions: {
+    flexDirection: 'row',
+    gap: 15,
+  },
+  actionIcon: {
+    fontSize: 16,
+    opacity: 0.8,
   },
   keyText: {
     color: '#94A3B8',
-    fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 14,
+    fontWeight: '500',
   },
   emptyText: {
     color: '#475569',
-    fontSize: 12,
+    fontSize: 13,
     fontStyle: 'italic',
     textAlign: 'center',
-    marginVertical: 10,
+    marginVertical: 15,
   },
   moreKeysText: {
     color: '#475569',
-    fontSize: 10,
+    fontSize: 11,
     textAlign: 'center',
-    marginTop: 10,
+    marginTop: 15,
     fontWeight: '700',
   },
-  benchmarkCard: { backgroundColor: '#0F172A', borderRadius: 24, padding: 20 },
-  benchmarkHeader: { marginBottom: 20 },
+  benchmarkCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 28,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.04)',
+  },
+  benchmarkHeader: { marginBottom: 25 },
   benchmarkSubtitle: {
     color: '#64748B',
-    fontSize: 11,
-    marginTop: 4,
+    fontSize: 12,
+    marginTop: 6,
     fontWeight: '600',
   },
-  benchmarkButtonRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
   benchmarkButton: {
     backgroundColor: '#38BDF8',
-    paddingVertical: 15,
-    borderRadius: 14,
+    paddingVertical: 16,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#38BDF8',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+    marginBottom: 30,
   },
   benchmarkButtonDisabled: { opacity: 0.5 },
-  benchmarkButtonText: { color: '#fff', fontSize: 13, fontWeight: '900' },
+  benchmarkButtonText: { color: '#fff', fontSize: 14, fontWeight: '900' },
   resultTable: {
-    borderRadius: 16,
-    overflow: 'hidden',
     backgroundColor: '#020617',
-    padding: 10,
+    borderRadius: 20,
+    padding: 16,
   },
-  resultHeader: {
+  resultRowContainer: {
+    marginBottom: 18,
+  },
+  resultLabelRow: {
     flexDirection: 'row',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
   },
-  resultHeaderCell: {
-    flex: 1,
-    color: '#F8FAFC',
-    fontSize: 10,
-    fontWeight: '900',
-    textAlign: 'center',
-  },
-  resultRow: {
-    flexDirection: 'row',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#0F172A',
-  },
-  resultLabel: { flex: 1, color: '#64748B', fontSize: 11, fontWeight: '700' },
+  resultLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '700' },
   resultValue: {
-    flex: 1,
-    fontSize: 11,
-    fontWeight: '800',
-    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '900',
+    textAlign: 'right',
+  },
+  barBackground: {
+    height: 6,
+    backgroundColor: '#1E293B',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  barForeground: {
+    height: '100%',
+    backgroundColor: '#38BDF8',
+    borderRadius: 3,
   },
   secureDBColor: { color: '#38BDF8' },
   winnerBanner: {
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
-    padding: 12,
-    borderRadius: 12,
-    marginTop: 20,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    padding: 16,
+    borderRadius: 16,
+    marginTop: 25,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.2)',
   },
   winnerText: {
-    color: '#22C55E',
-    fontSize: 12,
+    color: '#10B981',
+    fontSize: 13,
     fontWeight: '900',
     textAlign: 'center',
   },
@@ -700,38 +820,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 15,
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 20,
+    borderWidth: 1,
   },
   statusSuccess: {
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-    borderWidth: 1,
-    borderColor: '#22C55E',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: 'rgba(16, 185, 129, 0.3)',
   },
   statusError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderWidth: 1,
-    borderColor: '#EF4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
   },
   statusInfo: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    borderWidth: 1,
-    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   statusText: {
     flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     color: '#F8FAFC',
   },
-  statusTextError: {
-    color: '#EF4444',
-  },
+  statusTextError: { color: '#EF4444' },
   statusClose: {
-    fontSize: 20,
-    color: '#94A3B8',
-    marginLeft: 10,
-    paddingHorizontal: 5,
+    fontSize: 22,
+    color: '#64748B',
+    marginLeft: 12,
+    fontWeight: '300',
   },
 });
