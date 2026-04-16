@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <memory>
+#include <shared_mutex>
 
 namespace secure_db {
 
@@ -95,8 +96,16 @@ public:
     
     void checkpoint();
 
-    const TreeHeader& getHeader() const { return header_; }
-    void setNextFreeOffset(uint64_t offset) { header_.next_free_offset = offset; }
+    const TreeHeader& getHeader() const { 
+        std::shared_lock lock(tree_mutex_);
+        return header_; 
+    }
+    
+    void setNextFreeOffset(uint64_t offset) { 
+        std::unique_lock lock(tree_mutex_);
+        header_.next_free_offset = offset; 
+    }
+    
     const BTreeNodeConfig& getConfig() const { return config_; }
 
 private:
@@ -105,6 +114,7 @@ private:
     TreeHeader header_;
     BTreeNodeConfig config_;
     BTreeNodeCache cache_;
+    mutable std::shared_mutex tree_mutex_;
     
     uint64_t allocate_node(bool is_leaf);
     void write_node(uint64_t offset, const BTreeNode& node);

@@ -31,6 +31,7 @@ void PersistentBPlusTree::initWithConfig(const BTreeNodeConfig& config) {
 }
 
 void PersistentBPlusTree::init() {
+    std::unique_lock lock(tree_mutex_);
     std::string header_bytes = mmap_->read(0, sizeof(TreeHeader));
     std::memcpy(&header_, header_bytes.data(), sizeof(TreeHeader));
     
@@ -48,7 +49,15 @@ void PersistentBPlusTree::init() {
         root_node.is_leaf = true;
         write_node(header_.root_offset, root_node);
         
-        checkpoint();
+        // checkpoint() expects lock to be held
+        header_.checksum = 0;
+        header_.checksum = calculate_crc32(reinterpret_cast<uint8_t*>(&header_), sizeof(TreeHeader));
+        std::string encoded(reinterpret_cast<const char*>(&header_), sizeof(TreeHeader));
+        if (wal_) wal_->logPageWrite(0, encoded);
+        else {
+            mmap_->write(0, encoded);
+            mmap_->sync(0, sizeof(TreeHeader));
+        }
     } else {
         uint32_t expected_crc = header_.checksum;
         header_.checksum = 0;
@@ -62,6 +71,7 @@ void PersistentBPlusTree::init() {
 }
 
 void PersistentBPlusTree::checkpoint() {
+    // Note: Caller must hold tree_mutex_ (insert calls this)
     header_.checksum = 0;
     header_.checksum = calculate_crc32(reinterpret_cast<uint8_t*>(&header_), sizeof(TreeHeader));
     std::string encoded(reinterpret_cast<const char*>(&header_), sizeof(TreeHeader));
@@ -122,6 +132,7 @@ BTreeNode PersistentBPlusTree::read_node(uint64_t offset) {
 }
 
 void PersistentBPlusTree::insert(const std::string& key, size_t data_offset, bool shouldCheckpoint) {
+    std::unique_lock lock(tree_mutex_);
     uint64_t root_off = header_.root_offset;
     BTreeNode root = read_node(root_off);
     
@@ -235,6 +246,7 @@ void PersistentBPlusTree::insert_non_full(uint64_t node_off, const std::string& 
 }
 
 size_t PersistentBPlusTree::find(const std::string& key) {
+    std::shared_lock lock(tree_mutex_);
     uint64_t curr_off = header_.root_offset;
     while (true) {
         BTreeNode node = read_node(curr_off);
@@ -255,6 +267,7 @@ size_t PersistentBPlusTree::find(const std::string& key) {
 }
 
 std::vector<std::pair<std::string, size_t>> PersistentBPlusTree::range(const std::string& start_key, const std::string& end_key) {
+    std::shared_lock lock(tree_mutex_);
     std::vector<std::pair<std::string, size_t>> results;
     
     if (header_.root_offset == 0) return results;
@@ -282,6 +295,7 @@ std::vector<std::pair<std::string, size_t>> PersistentBPlusTree::range(const std
 }
 
 std::vector<std::string> PersistentBPlusTree::getAllKeys() {
+    std::shared_lock lock(tree_mutex_);
     std::vector<std::string> keys;
     if (header_.root_offset == 0) return keys;
     

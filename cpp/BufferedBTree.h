@@ -43,6 +43,7 @@ private:
 
     PersistentBPlusTree* tree_;
     std::deque<InsertOperation> write_buffer_;
+    std::deque<InsertOperation> flushing_buffer_;
     std::mutex buffer_mutex_;
     
     // Worker state
