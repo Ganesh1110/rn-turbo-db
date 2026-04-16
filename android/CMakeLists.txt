@@ -20,6 +20,7 @@ add_library(
     ../cpp/SodiumCryptoContext.cpp
     ../cpp/CachedCryptoContext.cpp
     ../cpp/LazyRecordProxy.cpp
+    ../cpp/ThreadPool.cpp
 )
 
 set_target_properties(

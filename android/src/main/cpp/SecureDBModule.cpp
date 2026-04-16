@@ -80,7 +80,7 @@ Java_com_securedb_SecureDBModule_nativeInstall(JNIEnv *env, jobject thiz, jlong 
             crypto->setMasterKey(key);
             
             LOGI("nativeInstall: installing Turbo DB Engine");
-            secure_db::installDBEngine(*runtime, std::move(crypto));
+            secure_db::installDBEngine(*runtime, nullptr, std::move(crypto));
             LOGI("nativeInstall: Turbo Mode installation complete");
         } catch (const std::exception& e) {
             LOGE("nativeInstall error: %s", e.what());

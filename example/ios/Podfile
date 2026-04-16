@@ -38,6 +38,26 @@ target 'SecureDBExample' do
     # FOLLY_CFG_NO_COROUTINES is the correct pre-detection guard in Portability.h.
     # It must be set before compiler feature detection fires (unlike FOLLY_HAS_COROUTINES).
     installer.pods_project.targets.each do |target|
+      if target.name == 'libsodium'
+        target.build_configurations.each do |config|
+          # Ensure libsodium looks at its own headers first to avoid collision with react-native's utils.h
+          header_paths = config.build_settings['HEADER_SEARCH_PATHS'] || '$(inherited)'
+          unless header_paths.include?('src/libsodium/include/sodium')
+            config.build_settings['HEADER_SEARCH_PATHS'] = "\"$(PODS_TARGET_SRCROOT)/src/libsodium/include/sodium\" #{header_paths}"
+          end
+          
+          # Remove React-VFS overlay which causes header collisions (utils.h)
+          ['OTHER_CFLAGS', 'OTHER_CPLUSPLUSFLAGS'].each do |key|
+            settings = config.build_settings[key]
+            if settings.is_a?(String)
+              config.build_settings[key] = settings.gsub(/-ivfsoverlay\s+\"[^\"]*React-VFS\.yaml\"/, '').gsub(/-ivfsoverlay\s+[^\s]*React-VFS\.yaml/, '')
+            elsif settings.is_a?(Array)
+              config.build_settings[key] = settings.map { |s| s.gsub(/-ivfsoverlay\s+\"[^\"]*React-VFS\.yaml\"/, '').gsub(/-ivfsoverlay\s+[^\s]*React-VFS\.yaml/, '') }
+            end
+          end
+        end
+      end
+
       target.build_configurations.each do |config|
         flags = config.build_settings['OTHER_CPLUSPLUSFLAGS'] || '$(inherited)'
         unless flags.include?('FOLLY_CFG_NO_COROUTINES')

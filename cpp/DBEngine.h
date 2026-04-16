@@ -1,6 +1,7 @@
 #pragma once
 
 #include <jsi/jsi.h>
+#include <ReactCommon/CallInvoker.h>
 #include <shared_mutex>
 #include <memory>
 #include <chrono>
@@ -21,7 +22,10 @@ class LazyRecordProxy;
 
 class DBEngine : public facebook::jsi::HostObject {
 public:
-    explicit DBEngine(std::unique_ptr<SecureCryptoContext> crypto = nullptr);
+    explicit DBEngine(
+        std::shared_ptr<facebook::react::CallInvoker> js_invoker,
+        std::unique_ptr<SecureCryptoContext> crypto = nullptr
+    );
     
     ~DBEngine() {
         if (mmap_) {
@@ -86,6 +90,7 @@ private:
     size_t next_free_offset_;
     ArenaAllocator arena_;
     std::unique_ptr<ThreadPool> thread_pool_;
+    std::shared_ptr<facebook::react::CallInvoker> js_invoker_;
     bool is_secure_mode_ = true;
     bool needs_repair_ = false;
 
@@ -96,6 +101,10 @@ private:
     std::string getWALPath() const;
 };
 
-void installDBEngine(facebook::jsi::Runtime& runtime, std::unique_ptr<SecureCryptoContext> crypto = nullptr);
+void installDBEngine(
+    facebook::jsi::Runtime& runtime,
+    std::shared_ptr<facebook::react::CallInvoker> js_invoker,
+    std::unique_ptr<SecureCryptoContext> crypto = nullptr
+);
 
 }

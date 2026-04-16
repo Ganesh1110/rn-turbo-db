@@ -35,11 +35,9 @@ bool SecureDBImpl::install(jsi::Runtime& rt) {
 #ifdef __APPLE__
     crypto = std::make_unique<secure_db::SodiumCryptoContext>();
     crypto->setMasterKey(getDeviceMasterKey());
-#else
-    // For Android, installation is handled via JNI in SecureDBModule.cpp
 #endif
 
-    secure_db::installDBEngine(rt, std::move(crypto));
+    secure_db::installDBEngine(rt, jsInvoker_, std::move(crypto));
     return true;
 }
 

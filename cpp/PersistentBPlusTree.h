@@ -14,6 +14,7 @@ uint32_t calculate_crc32(const uint8_t* data, size_t length);
 
 #pragma pack(push, 1)
 struct TreeHeader {
+    static constexpr uint64_t MAGIC = 0x42504C54;
     uint64_t magic;
     uint64_t root_offset;
     uint64_t free_list_head;

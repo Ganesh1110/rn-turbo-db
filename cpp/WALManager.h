@@ -72,6 +72,8 @@ public:
     // Clear WAL file
     void clear();
 
+    uint32_t calculate_crc32(const uint8_t* data, size_t length);
+
 private:
     std::string wal_path_;
     std::ofstream wal_file_;
@@ -81,7 +83,7 @@ private:
 #endif
     
     void appendRecord(const WALRecordHeader& header, const uint8_t* payload, size_t length);
-    uint32_t calculate_crc32(const uint8_t* data, size_t length);
 };
 
 }
+
