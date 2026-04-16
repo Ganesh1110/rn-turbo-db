@@ -340,37 +340,44 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
         arena_.reset();
         BinarySerializer::serialize(runtime, obj, arena_);
         
-        // Step 2: Grab sequential offset and commit using Encryption proxy
+        // Step 2: Grab sequential offset and encrypt directly into arena
         size_t offset = next_free_offset_;
-        std::vector<uint8_t> final_payload;
+        size_t serialized_size = arena_.size();
         
+        // Reserve space for: nonce (24) + ciphertext + mac (16)
+        size_t encrypted_max = 24 + serialized_size + 16;
+        arena_.reserve(encrypted_max);
+        
+        size_t encrypted_len = 0;
         if (crypto_) {
-            final_payload = crypto_->encrypt(arena_.data(), arena_.size());
+            crypto_->encryptInto(arena_.data(), serialized_size, 
+                                 arena_.data() + serialized_size, encrypted_len);
         } else {
-            final_payload.assign(arena_.data(), arena_.data() + arena_.size());
+            std::memcpy(arena_.data() + serialized_size, arena_.data(), serialized_size);
+            encrypted_len = serialized_size;
         }
         
-        size_t payload_len = final_payload.size();
+        size_t payload_len = encrypted_len;
         uint32_t len32 = static_cast<uint32_t>(payload_len);
-        std::string len_marker(reinterpret_cast<const char*>(&len32), sizeof(uint32_t));
-        std::string data(reinterpret_cast<const char*>(final_payload.data()), payload_len);
         
-        // Phase 6: Using WAL for atomicity, but MUST also write to main file
-        // in this prototype to ensure findRec (which reads from mmap) works immediately.
+        char len_buf[4];
+        std::memcpy(len_buf, &len32, 4);
+        
+        const char* data_start = reinterpret_cast<const char*>(arena_.data() + (crypto_ ? serialized_size : 0));
+        
         if (wal_) {
-            wal_->logPageWrite(offset, len_marker);
-            wal_->logPageWrite(offset + sizeof(uint32_t), data);
+            wal_->logPageWrite(offset, std::string(len_buf, 4));
+            wal_->logPageWrite(offset + 4, std::string(data_start, payload_len));
         }
         
-        // Always write to mmap to keep it in sync with the index
-        mmap_->write(offset, len_marker);
-        mmap_->write(offset + sizeof(uint32_t), data);
+        mmap_->write(offset, std::string(len_buf, 4));
+        mmap_->write(offset + 4, std::string(data_start, payload_len));
         
         // Push the needle cursor to point cleanly behind the record
-        next_free_offset_ += sizeof(uint32_t) + payload_len;
+        next_free_offset_ += 4 + payload_len;
         pbtree_->setNextFreeOffset(next_free_offset_);
         
-        // Step 3: Trigger the zero-latency queued background logic
+        // Step 4: Trigger the zero-latency queued background logic
         btree_->insert(key, offset);
         
         if (shouldCommit && wal_) {
@@ -400,11 +407,12 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
         
         std::string data_bytes = mmap_->read(offset + sizeof(uint32_t), payload_len);
         
-        auto decrypted = std::make_shared<std::vector<uint8_t>>();
+        std::shared_ptr<std::vector<uint8_t>> decrypted;
         if (crypto_) {
-            *decrypted = crypto_->decrypt(reinterpret_cast<const uint8_t*>(data_bytes.data()), payload_len);
+            auto decrypted_vec = crypto_->decryptAtOffset(reinterpret_cast<const uint8_t*>(data_bytes.data()), payload_len, offset);
+            decrypted = std::make_shared<std::vector<uint8_t>>(std::move(decrypted_vec));
         } else {
-            decrypted->assign(data_bytes.begin(), data_bytes.end());
+            decrypted = std::make_shared<std::vector<uint8_t>>(data_bytes.begin(), data_bytes.end());
         }
         
         if (!decrypted->empty() && static_cast<BinaryType>((*decrypted)[0]) == BinaryType::Object) {
@@ -534,11 +542,12 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
             
             std::string data_bytes = mmap_->read(offset + sizeof(uint32_t), payload_len);
             
-            auto decrypted = std::make_shared<std::vector<uint8_t>>();
+            std::shared_ptr<std::vector<uint8_t>> decrypted;
             if (crypto_) {
-                *decrypted = crypto_->decrypt(reinterpret_cast<const uint8_t*>(data_bytes.data()), payload_len);
+                auto decrypted_vec = crypto_->decryptAtOffset(reinterpret_cast<const uint8_t*>(data_bytes.data()), payload_len, offset);
+                decrypted = std::make_shared<std::vector<uint8_t>>(std::move(decrypted_vec));
             } else {
-                decrypted->assign(data_bytes.begin(), data_bytes.end());
+                decrypted = std::make_shared<std::vector<uint8_t>>(data_bytes.begin(), data_bytes.end());
             }
 
             if (!decrypted->empty() && static_cast<BinaryType>((*decrypted)[0]) == BinaryType::Object) {

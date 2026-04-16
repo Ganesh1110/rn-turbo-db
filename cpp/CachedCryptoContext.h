@@ -21,14 +21,18 @@ public:
     bool decryptInto(const uint8_t* ciphertext, size_t length,
                      uint8_t* out_buffer, size_t& out_length) override;
 
-    void invalidatePage(uint64_t page_offset);
+    std::vector<uint8_t> decryptAtOffset(const uint8_t* ciphertext, size_t length, uint64_t record_offset);
+    bool decryptIntoAtOffset(const uint8_t* ciphertext, size_t length, uint64_t record_offset,
+                             uint8_t* out_buffer, size_t& out_length);
+
+    void invalidatePage(uint64_t record_offset);
     void clearCache();
 
 private:
     std::unique_ptr<SecureCryptoContext> inner_;
     
     struct CacheEntry {
-        uint64_t page_offset;
+        uint64_t record_offset;
         std::vector<uint8_t> decrypted_data;
     };
     
@@ -37,8 +41,8 @@ private:
     std::mutex cache_mutex_;
     size_t max_cache_pages_;
     
-    bool lookupCache(uint64_t page_offset, std::vector<uint8_t>& out);
-    void insertCache(uint64_t page_offset, const uint8_t* data, size_t len);
+    bool lookupCache(uint64_t record_offset, std::vector<uint8_t>& out);
+    void insertCache(uint64_t record_offset, const uint8_t* data, size_t len);
 };
 
-} // namespace secure_db
+}
