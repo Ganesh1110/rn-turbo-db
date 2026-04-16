@@ -12,6 +12,8 @@
 #include "ArenaAllocator.h"
 #include "BinarySerializer.h"
 #include "SecureCryptoContext.h"
+#include "ThreadPool.h"
+#include "WALManager.h"
 
 namespace secure_db {
 
@@ -54,6 +56,12 @@ public:
     facebook::jsi::Value setMulti(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries);
     facebook::jsi::Value getMultiple(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys);
     bool remove(const std::string& key);
+
+    // Async Operations (Promise-based, non-blocking)
+    facebook::jsi::Value setMultiAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries);
+    facebook::jsi::Value getMultipleAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys);
+    facebook::jsi::Value rangeQueryAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& args);
+    facebook::jsi::Value getAllKeysAsync(facebook::jsi::Runtime& runtime);
     
     // Query Operations
     std::vector<std::pair<std::string, facebook::jsi::Value>> rangeQuery(
@@ -77,6 +85,15 @@ private:
     std::unique_ptr<WALManager> wal_;
     size_t next_free_offset_;
     ArenaAllocator arena_;
+    std::unique_ptr<ThreadPool> thread_pool_;
+    bool is_secure_mode_ = true;
+    bool needs_repair_ = false;
+
+    void setSecureMode(bool enable);
+    bool repair();
+    bool verifyHealth();
+    std::string getDatabasePath() const;
+    std::string getWALPath() const;
 };
 
 void installDBEngine(facebook::jsi::Runtime& runtime, std::unique_ptr<SecureCryptoContext> crypto = nullptr);

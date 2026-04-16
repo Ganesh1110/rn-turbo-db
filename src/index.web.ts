@@ -145,6 +145,10 @@ export class SecureDB {
     return res;
   }
 
+  async del(key: string): Promise<boolean> {
+    return this.remove(key);
+  }
+
   async deleteAll(): Promise<boolean> {
     await this.ensureInitialized();
     this.storage.clear();

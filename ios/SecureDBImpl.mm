@@ -5,19 +5,23 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #include "SodiumCryptoContext.h"
+#include "KeyManagerIOS.h"
+#include "PlatformUtilsIOS.h"
 #endif
 
 namespace facebook::react {
 
 static std::vector<uint8_t> getDeviceMasterKey() {
-    // In a production environment, this should retrieve a 32-byte key from the iOS Keychain.
-    // For this refactor, we provide a deterministic placeholder that mimics a hardware key.
-    // A real implementation would use SecItemCopyMatching.
-    std::vector<uint8_t> key(32);
-    for (int i = 0; i < 32; i++) {
-        key[i] = static_cast<uint8_t>(0xAC ^ i); 
+    try {
+        return secure_db::KeyManagerIOS::getOrGenerateMasterKey("securedb-master-key");
+    } catch (const std::exception& e) {
+        NSLog(@"[SecureDB] Failed to get Secure Enclave key: %s", e.what());
+        std::vector<uint8_t> key(32);
+        for (int i = 0; i < 32; i++) {
+            key[i] = static_cast<uint8_t>(0xAC ^ i);
+        }
+        return key;
     }
-    return key;
 }
 
 SecureDBImpl::SecureDBImpl(

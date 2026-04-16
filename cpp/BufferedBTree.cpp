@@ -1,5 +1,6 @@
 #include "BufferedBTree.h"
 #include <algorithm>
+#include <map>
 
 namespace secure_db {
 
@@ -109,48 +110,70 @@ void BufferedBTree::flush() {
 
 std::vector<std::string> BufferedBTree::getAllKeys() {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
+    
+    // Use a map to keep track of the latest offset for each key
+    std::map<std::string, size_t> key_map;
+    
+    // 1. Get all keys from disk
     std::vector<std::string> disk_keys = tree_->getAllKeys();
-    std::vector<std::string> results = disk_keys;
+    for (const auto& key : disk_keys) {
+        key_map[key] = tree_->find(key);
+    }
     
-    auto add_keys = [&](const std::deque<InsertOperation>& buffer) {
-        for (const auto& op : buffer) {
-            if (std::find(results.begin(), results.end(), op.key) == results.end()) {
-                results.push_back(op.key);
-            }
+    // 2. Overlay flushing buffer
+    for (const auto& op : flushing_buffer_) {
+        key_map[op.key] = op.data_offset;
+    }
+    
+    // 3. Overlay write buffer
+    for (const auto& op : write_buffer_) {
+        key_map[op.key] = op.data_offset;
+    }
+    
+    // 4. Collect keys with non-zero offsets
+    std::vector<std::string> results;
+    for (const auto& [key, offset] : key_map) {
+        if (offset > 0) {
+            results.push_back(key);
         }
-    };
+    }
     
-    add_keys(flushing_buffer_);
-    add_keys(write_buffer_);
     return results;
 }
 
 std::vector<std::pair<std::string, size_t>> BufferedBTree::range(const std::string& start_key, const std::string& end_key) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
-    auto results = tree_->range(start_key, end_key);
     
-    auto merge_buffer = [&](const std::deque<InsertOperation>& buffer) {
-        for (const auto& op : buffer) {
-            if (op.key >= start_key && op.key <= end_key) {
-                bool found = false;
-                for (auto& res : results) {
-                    if (res.first == op.key) {
-                        res.second = op.data_offset;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) results.push_back({op.key, op.data_offset});
-            }
+    // Use a map for merging and sorting
+    std::map<std::string, size_t> key_map;
+    
+    // 1. Get from disk
+    auto disk_results = tree_->range(start_key, end_key);
+    for (const auto& res : disk_results) {
+        key_map[res.first] = res.second;
+    }
+    
+    // 2. Overlay flushing buffer
+    for (const auto& op : flushing_buffer_) {
+        if (op.key >= start_key && op.key <= end_key) {
+            key_map[op.key] = op.data_offset;
         }
-    };
+    }
     
-    merge_buffer(flushing_buffer_);
-    merge_buffer(write_buffer_);
+    // 3. Overlay write buffer
+    for (const auto& op : write_buffer_) {
+        if (op.key >= start_key && op.key <= end_key) {
+            key_map[op.key] = op.data_offset;
+        }
+    }
     
-    std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) {
-        return a.first < b.first;
-    });
+    // 4. Collect results with non-zero offsets
+    std::vector<std::pair<std::string, size_t>> results;
+    for (const auto& [key, offset] : key_map) {
+        if (offset > 0) {
+            results.push_back({key, offset});
+        }
+    }
     
     return results;
 }

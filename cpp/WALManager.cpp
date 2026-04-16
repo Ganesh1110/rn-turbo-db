@@ -3,12 +3,28 @@
 #include <iostream>
 #include <filesystem>
 #include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace secure_db {
 
-WALManager::WALManager(const std::string& db_path, SecureCryptoContext* crypto) 
-    : wal_path_(db_path + ".wal"), crypto_(crypto) {
-    wal_file_.open(wal_path_, std::ios::binary | std::ios::app);
+WALManager::WALManager(const std::string& db_path, SecureCryptoContext* crypto)
+    : wal_path_(db_path + ".wal"), crypto_(crypto)
+#ifdef __ANDROID__
+    , wal_fd_(-1)
+#endif
+{
+    openWAL();
+}
+
+bool WALManager::openWAL() {
+    wal_file_.open(wal_path_, std::ios::binary | std::ios::app | std::ios::out);
+    if (!wal_file_.is_open()) return false;
+
+#ifdef __ANDROID__
+    wal_fd_ = ::open(wal_path_.c_str(), O_WRONLY | O_APPEND);
+#endif
+    return true;
 }
 
 WALManager::~WALManager() {
@@ -80,6 +96,26 @@ void WALManager::checkpoint() {
     clear();
 }
 
+bool WALManager::sync() {
+    if (!wal_file_.is_open()) return false;
+
+    wal_file_.flush();
+
+#ifdef __ANDROID__
+    if (wal_fd_ >= 0) {
+        fsync(wal_fd_);
+    }
+#else
+    // iOS/macOS: Get file descriptor and fsync
+    int fd = ::open(wal_path_.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        ::close(fd);
+    }
+#endif
+    return true;
+}
+
 void WALManager::clear() {
     if (wal_file_.is_open()) {
         wal_file_.close();
@@ -107,18 +143,23 @@ void WALManager::recover(MMapRegion* mmap) {
                 std::cerr << "WAL Recovery: Invalid record length. Skipping.\n";
                 continue;
             }
-            std::string payload(header.length - sizeof(WALRecordHeader), '\0');
-            reader.read(payload.data(), payload.size());
-            
-            uint32_t current_crc = calculate_crc32(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+            size_t payload_len = header.length - sizeof(WALRecordHeader);
+            std::vector<char> payload_buffer(payload_len);
+            reader.read(payload_buffer.data(), payload_len);
+            if (reader.gcount() != static_cast<std::streamsize>(payload_len)) {
+                std::cerr << "WAL Recovery: Read " << reader.gcount() << " bytes, expected " << payload_len << "\n";
+                continue;
+            }
+
+            uint32_t current_crc = calculate_crc32(reinterpret_cast<const uint8_t*>(payload_buffer.data()), payload_len);
             if (current_crc == header.checksum) {
-                std::string decrypted = payload;
+                std::string decrypted = payload_buffer.data();
                 if (crypto_) {
                     std::vector<uint8_t> dec_bytes = crypto_->decrypt(
-                        reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+                        reinterpret_cast<const uint8_t*>(payload_buffer.data()), payload_len);
                     decrypted.assign(reinterpret_cast<const char*>(dec_bytes.data()), dec_bytes.size());
                 }
-                
+
                 std::cout << "Replaying write at offset " << header.offset << " (" << decrypted.size() << " bytes)\n";
                 mmap->write(header.offset, decrypted);
             } else {

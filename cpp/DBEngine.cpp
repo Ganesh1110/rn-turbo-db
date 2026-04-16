@@ -173,7 +173,7 @@ facebook::jsi::Value DBEngine::get(
         );
     }
     
-    if (propName == "remove") {
+    if (propName == "remove" || propName == "del") {
         return facebook::jsi::Function::createFromHostFunction(
             runtime, name, 1,
             [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
@@ -239,7 +239,90 @@ facebook::jsi::Value DBEngine::get(
             }
         );
     }
-    
+
+    if (propName == "setMultiAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return this->setMultiAsync(runtime, args[0]);
+            }
+        );
+    }
+
+    if (propName == "getMultipleAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return this->getMultipleAsync(runtime, args[0]);
+            }
+        );
+    }
+
+    if (propName == "rangeQueryAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 2,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return this->rangeQueryAsync(runtime, args[0]);
+            }
+        );
+    }
+
+if (propName == "getAllKeysAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return this->getAllKeysAsync(runtime);
+            }
+        );
+    }
+
+    if (propName == "getDatabasePath") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return facebook::jsi::String::createFromUtf8(runtime, this->getDatabasePath());
+            }
+        );
+    }
+
+    if (propName == "getWALPath") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return facebook::jsi::String::createFromUtf8(runtime, this->getWALPath());
+            }
+        );
+    }
+
+    if (propName == "verifyHealth") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return facebook::jsi::Value(this->verifyHealth());
+            }
+        );
+    }
+
+    if (propName == "repair") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                return facebook::jsi::Value(this->repair());
+            }
+        );
+    }
+
+    if (propName == "setSecureMode") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                bool enable = args[0].asBool();
+                this->setSecureMode(enable);
+                return facebook::jsi::Value::undefined();
+            }
+        );
+    }
+
     return facebook::jsi::Value::undefined();
 }
 
@@ -257,10 +340,20 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(facebook::jsi:
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setMulti"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getMultiple"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "remove"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "del"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "rangeQuery"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getAllKeys"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "deleteAll"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "flush"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setMultiAsync"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getMultipleAsync"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "rangeQueryAsync"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getAllKeysAsync"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getDatabasePath"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getWALPath"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "verifyHealth"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "repair"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setSecureMode"));
     return names;
 }
 
@@ -273,9 +366,111 @@ std::string DBEngine::echo(const std::string& message) {
 }
 
 double DBEngine::benchmark() {
-    auto now = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration<double, std::milli>(now - start_time_).count();
-    return elapsed;
+    if (!btree_) return 0;
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    // Perform 1000 small operations
+    for (int i = 0; i < 1000; i++) {
+        std::string key = "bench_" + std::to_string(i);
+        btree_->insert(key, 1000 + i);
+    }
+    btree_->flush();
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+void DBEngine::setSecureMode(bool enable) {
+    std::unique_lock lock(rw_mutex_);
+    is_secure_mode_ = enable;
+    if (wal_) {
+        if (enable) {
+            wal_->openWAL();
+        } else {
+            wal_->clear();
+        }
+    }
+}
+
+bool DBEngine::verifyHealth() {
+    if (!mmap_ || !pbtree_) return false;
+
+    // Check B+ Tree header magic number
+    auto header = pbtree_->getHeader();
+    if (header.magic != BTreeHeader::MAGIC) {
+        LOGE("B+ Tree header magic mismatch: 0x%08x != 0x%08x", header.magic, BTreeHeader::MAGIC);
+        return false;
+    }
+
+    // Check bounds
+    if (header.next_free_offset > mmap_->getSize()) {
+        LOGE("next_free_offset %zu exceeds mmap size %zu", header.next_free_offset, mmap_->getSize());
+        return false;
+    }
+
+    return true;
+}
+
+bool DBEngine::repair() {
+    if (!mmap_) return false;
+
+    std::unique_lock lock(rw_mutex_);
+
+    std::string db_path = mmap_->getPath();
+    std::string corrupt_path = db_path + ".corrupt.bak";
+
+    try {
+        // Step 1: Close current mappings
+        mmap_->close();
+        if (btree_) btree_.reset();
+        if (pbtree_) pbtree_.reset();
+        if (wal_) wal_.reset();
+
+        // Step 2: Archive corrupted file
+        std::rename(db_path.c_str(), corrupt_path.c_str());
+        std::remove((db_path + ".idx").c_str());
+        std::remove((db_path + ".wal").c_str());
+
+        LOGI("Database archived to %s", corrupt_path.c_str());
+
+        // Step 3: Reinitialize fresh
+        next_free_offset_ = 1024 * 1024;
+        needs_repair_ = false;
+
+        mmap_ = std::make_unique<MMapRegion>();
+        mmap_->init(db_path, 10 * 1024 * 1024);
+
+        if (is_secure_mode_) {
+            wal_ = std::make_unique<WALManager>(db_path, crypto_.get());
+        }
+
+        pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
+        pbtree_->init();
+
+        btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
+
+        LOGI("Database repair complete");
+        return true;
+
+    } catch (const std::exception& e) {
+        LOGE("Repair failed: %s", e.what());
+        needs_repair_ = true;
+        return false;
+    }
+}
+
+std::string DBEngine::getDatabasePath() const {
+    if (mmap_) {
+        return mmap_->getPath();
+    }
+    return "";
+}
+
+std::string DBEngine::getWALPath() const {
+    if (wal_) {
+        return wal_->getWALPath();
+    }
+    return "";
 }
 
 bool DBEngine::initStorage(const std::string& path, size_t size) {
@@ -284,29 +479,41 @@ bool DBEngine::initStorage(const std::string& path, size_t size) {
     }
     try {
         mmap_->init(path, size);
-        
+
         // Initialize WAL Manager
         if (!wal_) {
             wal_ = std::make_unique<WALManager>(path, crypto_.get());
         }
-        
-        // Phase 6: Run recovery before loading B+ Tree
-        wal_->recover(mmap_.get());
-        
-        // Initialize Phase 4 Tiers natively chained over the mmap pointer
-        if (!pbtree_) {
-            pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
-            pbtree_->init(); // Reads/writes Header mapping offset 0
-            
-            // Phase 6: Initialize offset from persisted header
-            next_free_offset_ = pbtree_->getHeader().next_free_offset;
+
+        // Initialize Persistent B+ Tree
+        pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
+        pbtree_->init();
+
+        // Verify health before loading
+        if (!verifyHealth()) {
+            LOGE("Health check failed, triggering repair");
+            needs_repair_ = true;
+            return repair();
         }
+
+        // Run WAL recovery (secure mode only)
+        if (is_secure_mode_) {
+            wal_->recover(mmap_.get());
+        }
+
+        // Initialize offset from persisted header
+        next_free_offset_ = pbtree_->getHeader().next_free_offset;
+
         if (!btree_) {
             btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
         }
-        
+
         return true;
     } catch(const std::exception& e) {
+        LOGE("initStorage exception: %s, triggering repair", e.what());
+        needs_repair_ = true;
+        return repair();
+    }
         std::cerr << "DBEngine initStorage error: " << e.what() << "\n";
         return false;
     }
@@ -326,6 +533,7 @@ std::string DBEngine::read(size_t offset, size_t length) {
 }
 
 facebook::jsi::Value DBEngine::insertRec(facebook::jsi::Runtime& runtime, const std::string& key, const facebook::jsi::Value& obj) {
+    if (!btree_ || !mmap_) return facebook::jsi::Value(false);
     return this->insertRecInternal(runtime, key, obj, true);
 }
 
@@ -355,24 +563,35 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
         }
         
         uint32_t len32 = static_cast<uint32_t>(payload_len);
-        
-        if (wal_) {
+
+        // CRC injection (secure mode only)
+        uint32_t crc32 = 0;
+        if (is_secure_mode_) {
+            crc32 = wal_ ? wal_->calculate_crc32(payload_ptr, payload_len) : 0;
+        }
+
+        if (is_secure_mode_ && wal_) {
             wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
             wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+            wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+            wal_->sync();
         }
-        
+
+        // Format: [LEN (4)][PAYLOAD][CRC32 (4)]
         mmap_->write(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
         mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
+        mmap_->write(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
         
-        // Push the needle cursor to point cleanly behind the record
-        next_free_offset_ += sizeof(uint32_t) + payload_len;
-        pbtree_->setNextFreeOffset(next_free_offset_);
+        // Push the needle cursor to point cleanly behind the record (including CRC)
+        next_free_offset_ += sizeof(uint32_t) + payload_len + (is_secure_mode_ ? sizeof(uint32_t) : 0);
+        if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
         
         // Step 4: Trigger the zero-latency queued background logic
         btree_->insert(key, offset);
-        
-        if (shouldCommit && wal_) {
+
+        if (shouldCommit && is_secure_mode_ && wal_) {
             wal_->logCommit();
+            wal_->sync();
         }
         
         return facebook::jsi::Value(true);
@@ -387,20 +606,40 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
 
 facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const std::string& key) {
     if (!btree_ || !mmap_) return facebook::jsi::Value::undefined();
-    
+
     try {
         size_t offset = btree_->find(key);
         if (offset == 0) return facebook::jsi::Value::undefined();
-        
+
         const uint8_t* len_ptr = mmap_->get_address(offset);
         if (!len_ptr) return facebook::jsi::Value::undefined();
 
         uint32_t payload_len;
         std::memcpy(&payload_len, len_ptr, sizeof(uint32_t));
-        
+
+        // Bounds check
+        if (offset + sizeof(uint32_t) + payload_len > mmap_->getSize()) {
+            throw CorruptionException(CorruptionException::Type::OFFSET_OUT_OF_BOUNDS,
+                "Offset out of bounds: " + std::to_string(offset));
+        }
+
         const uint8_t* payload_ptr = mmap_->get_address(offset + sizeof(uint32_t));
         if (!payload_ptr) return facebook::jsi::Value::undefined();
-        
+
+        // CRC validation (secure mode only)
+        if (is_secure_mode_ && wal_) {
+            const uint8_t* crc_ptr = mmap_->get_address(offset + sizeof(uint32_t) + payload_len);
+            if (crc_ptr) {
+                uint32_t stored_crc;
+                std::memcpy(&stored_crc, crc_ptr, sizeof(uint32_t));
+                uint32_t computed_crc = wal_->calculate_crc32(payload_ptr, payload_len);
+                if (stored_crc != computed_crc) {
+                    throw CorruptionException(CorruptionException::Type::CRC_MISMATCH,
+                        "CRC mismatch at offset: " + std::to_string(offset));
+                }
+            }
+        }
+
         std::shared_ptr<std::vector<uint8_t>> decrypted;
         if (crypto_) {
             auto decrypted_vec = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
@@ -408,15 +647,19 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
         } else {
             decrypted = std::make_shared<std::vector<uint8_t>>(payload_ptr, payload_ptr + payload_len);
         }
-        
+
         if (!decrypted->empty() && static_cast<BinaryType>((*decrypted)[0]) == BinaryType::Object) {
             auto proxy = std::make_shared<LazyRecordProxy>(std::move(decrypted));
             return facebook::jsi::Object::createFromHostObject(runtime, proxy);
         }
 
         auto [val, consumed] = BinarySerializer::deserialize(runtime, decrypted->data(), decrypted->size());
-        
+
         return std::move(val);
+    } catch (const CorruptionException& e) {
+        LOGE("findRec corruption: %s", e.what());
+        needs_repair_ = true;
+        return facebook::jsi::Value::undefined();
     } catch (const std::exception& e) {
 #ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_ERROR, "SecureDB", "findRec error: %s", e.what());
@@ -436,8 +679,8 @@ bool DBEngine::clearStorage() {
     
     // 1. Close current mapping and reset all managers
     mmap_->close();
-    btree_.reset();
-    pbtree_.reset();
+    if (btree_) btree_.reset();
+    if (pbtree_) pbtree_.reset();
     if (wal_) {
         wal_.reset();
     }
@@ -447,7 +690,7 @@ bool DBEngine::clearStorage() {
     std::remove((path + ".idx").c_str());
     std::remove((path + ".wal").c_str());
     
-    next_free_offset_ = 0;
+    next_free_offset_ = 1024 * 1024; // Reset to default start offset
 
     // 3. Re-initialize
     return initStorage(path, size);
@@ -482,10 +725,10 @@ facebook::jsi::Value DBEngine::setMulti(facebook::jsi::Runtime& runtime, const f
     auto propNames = obj.getPropertyNames(runtime);
     size_t count = propNames.size(runtime);
     
-    // Phase 4 Ultra-Optimization: 
+    // Phase 4 Ultra-Optimization:
     // We avoid 500 individual try/catch and JSI overhead of calling insertRecInternal.
     // We also batch all WAL records into a single buffered write if possible.
-    
+
     try {
         for (size_t i = 0; i < count; i++) {
             auto propName = propNames.getValueAtIndex(runtime, i).asString(runtime);
@@ -495,32 +738,51 @@ facebook::jsi::Value DBEngine::setMulti(facebook::jsi::Runtime& runtime, const f
             // Serialization
             arena_.reset();
             BinarySerializer::serialize(runtime, value, arena_);
-            
+
             size_t offset = next_free_offset_;
             size_t serialized_size = arena_.size();
-            
-// Use encryption (but skip WAL for speed)
+
+            // Use encryption (but skip WAL for speed)
             uint32_t payload_len = serialized_size;
             const uint8_t* payload_ptr = arena_.data();
             std::vector<uint8_t> encrypted;
-            
+
             if (crypto_) {
                 encrypted = crypto_->encrypt(arena_.data(), serialized_size);
                 payload_ptr = encrypted.data();
                 payload_len = encrypted.size();
             }
-            
-            // Direct MMap Write (Memory-only, OS handles flushing)
+
+            // CRC injection (secure mode only)
+            uint32_t crc32 = 0;
+            if (is_secure_mode_ && wal_) {
+                crc32 = wal_->calculate_crc32(payload_ptr, payload_len);
+            }
+
+            // WAL logging (secure mode only)
+            if (is_secure_mode_ && wal_) {
+                wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&payload_len), sizeof(uint32_t));
+                wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+                wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+            }
+
+            // Direct MMap Write with CRC (Memory-only, OS handles flushing)
             mmap_->write(offset, reinterpret_cast<const uint8_t*>(&payload_len), sizeof(uint32_t));
             mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
-            
-            next_free_offset_ += sizeof(uint32_t) + payload_len;
-            
+            mmap_->write(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+
+            next_free_offset_ += sizeof(uint32_t) + payload_len + (is_secure_mode_ ? sizeof(uint32_t) : 0);
+
             // Buffered B-Tree insert (Background worker handles the rest)
             btree_->insert(key, offset);
         }
-        
-        pbtree_->setNextFreeOffset(next_free_offset_);
+
+        if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
+
+        // Sync WAL after batch write (secure mode only)
+        if (is_secure_mode_ && wal_) {
+            wal_->sync();
+        }
         
         return facebook::jsi::Value(true);
     } catch (const std::exception& e) {
@@ -530,7 +792,7 @@ facebook::jsi::Value DBEngine::setMulti(facebook::jsi::Runtime& runtime, const f
 }
 
 facebook::jsi::Value DBEngine::getMultiple(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys) {
-    if (!keys.isObject() || !keys.asObject(runtime).isArray(runtime)) {
+    if (!keys.isObject() || !keys.asObject(runtime).isArray(runtime) || !btree_) {
         return facebook::jsi::Value::undefined();
     }
     
@@ -553,19 +815,19 @@ bool DBEngine::remove(const std::string& key) {
     size_t offset = btree_->find(key);
     if (offset == 0) return false;
     
-    pbtree_->insert(key, 0);
+    btree_->insert(key, 0); // Correctly update buffered tree with 0 offset (deleted)
     return true;
 }
 
 std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
-    facebook::jsi::Runtime& runtime, 
-    const std::string& startKey, 
+    facebook::jsi::Runtime& runtime,
+    const std::string& startKey,
     const std::string& endKey
 ) {
     std::vector<std::pair<std::string, facebook::jsi::Value>> results;
-    
-    if (!btree_) return results;
-    
+
+    if (!btree_ || !mmap_) return results;
+
     auto rangeResults = btree_->range(startKey, endKey);
     for (const auto& [key, offset] : rangeResults) {
         if (offset > 0) {
@@ -574,10 +836,29 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
 
             uint32_t payload_len;
             std::memcpy(&payload_len, len_ptr, sizeof(uint32_t));
-            
+
+            if (offset + sizeof(uint32_t) + payload_len > mmap_->getSize()) {
+                needs_repair_ = true;
+                continue;
+            }
+
             const uint8_t* payload_ptr = mmap_->get_address(offset + sizeof(uint32_t));
             if (!payload_ptr) continue;
-            
+
+            // CRC validation (secure mode only)
+            if (is_secure_mode_ && wal_) {
+                const uint8_t* crc_ptr = mmap_->get_address(offset + sizeof(uint32_t) + payload_len);
+                if (crc_ptr) {
+                    uint32_t stored_crc;
+                    std::memcpy(&stored_crc, crc_ptr, sizeof(uint32_t));
+                    uint32_t computed_crc = wal_->calculate_crc32(payload_ptr, payload_len);
+                    if (stored_crc != computed_crc) {
+                        needs_repair_ = true;
+                        continue;
+                    }
+                }
+            }
+
             std::shared_ptr<std::vector<uint8_t>> decrypted;
             if (crypto_) {
                 auto decrypted_vec = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
@@ -595,7 +876,7 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
             }
         }
     }
-    
+
     return results;
 }
 
@@ -612,6 +893,196 @@ void DBEngine::flush() {
     if (btree_) {
         btree_->flush();
     }
+}
+
+facebook::jsi::Value DBEngine::setMultiAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& entries) {
+    if (!entries.isObject() || !btree_ || !mmap_) {
+        return facebook::jsi::Value::promiseReject(runtime, std::runtime_error("Invalid state"));
+    }
+
+    facebook::jsi::Object obj = entries.asObject(runtime);
+    auto propNames = obj.getPropertyNames(runtime);
+    size_t count = propNames.size(runtime);
+
+    auto promise = facebook::jsi::Promise::create(runtime);
+
+    if (!thread_pool_) {
+        thread_pool_ = std::make_unique<ThreadPool>(2);
+    }
+
+    thread_pool_->enqueue([this, &runtime, &obj, propNames, count, promise]() {
+        std::unique_lock lock(rw_mutex_);
+
+        try {
+            for (size_t i = 0; i < count; i++) {
+                auto propName = propNames.getValueAtIndex(runtime, i).asString(runtime);
+                std::string key = propName.utf8(runtime);
+                auto value = obj.getProperty(runtime, propName);
+
+                arena_.reset();
+                BinarySerializer::serialize(runtime, value, arena_);
+
+                size_t offset = next_free_offset_;
+                size_t serialized_size = arena_.size();
+
+                uint32_t payload_len = serialized_size;
+                const uint8_t* payload_ptr = arena_.data();
+                std::vector<uint8_t> encrypted;
+
+                if (crypto_) {
+                    encrypted = crypto_->encrypt(arena_.data(), serialized_size);
+                    payload_ptr = encrypted.data();
+                    payload_len = encrypted.size();
+                }
+
+                // CRC injection (secure mode only)
+                uint32_t crc32 = 0;
+                if (is_secure_mode_ && wal_) {
+                    crc32 = wal_->calculate_crc32(payload_ptr, payload_len);
+                }
+
+                if (is_secure_mode_ && wal_) {
+                    wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&payload_len), sizeof(uint32_t));
+                    wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+                    wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+                }
+
+                mmap_->write(offset, reinterpret_cast<const uint8_t*>(&payload_len), sizeof(uint32_t));
+                mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
+                mmap_->write(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+
+                next_free_offset_ += sizeof(uint32_t) + payload_len + (is_secure_mode_ ? sizeof(uint32_t) : 0);
+
+                btree_->insert(key, offset);
+            }
+
+            if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
+
+            if (is_secure_mode_ && wal_) {
+                wal_->sync();
+            }
+
+            lock.unlock();
+            promise.resolve(runtime, facebook::jsi::Value(true));
+        } catch (const std::exception& e) {
+            lock.unlock();
+            promise.reject(runtime, facebook::jsi::String::createFromUtf8(runtime, e.what()));
+        }
+    });
+
+    return facebook::jsi::Value(promise);
+}
+
+facebook::jsi::Value DBEngine::getMultipleAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& keys) {
+    if (!keys.isObject() || !keys.asObject(runtime).isArray(runtime) || !btree_) {
+        return facebook::jsi::Value::promiseReject(runtime, std::runtime_error("Invalid state"));
+    }
+
+    facebook::jsi::Array keyArray = keys.asObject(runtime).asArray(runtime);
+    size_t count = keyArray.size(runtime);
+
+    auto promise = facebook::jsi::Promise::create(runtime);
+
+    if (!thread_pool_) {
+        thread_pool_ = std::make_unique<ThreadPool>(2);
+    }
+
+    std::vector<std::string> key_list;
+    key_list.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto key = keyArray.getValueAtIndex(runtime, i).asString(runtime);
+        key_list.push_back(key.utf8(runtime));
+    }
+
+    thread_pool_->enqueue([this, &runtime, key_list, promise]() {
+        std::shared_lock lock(rw_mutex_);
+
+        try {
+            auto result = facebook::jsi::Object(runtime);
+
+            for (const auto& key : key_list) {
+                auto value = findRec(runtime, key);
+                result.setProperty(runtime, facebook::jsi::String::createFromUtf8(runtime, key), value);
+            }
+
+            lock.unlock();
+            promise.resolve(runtime, result);
+        } catch (const std::exception& e) {
+            lock.unlock();
+            promise.reject(runtime, facebook::jsi::String::createFromUtf8(runtime, e.what()));
+        }
+    });
+
+    return facebook::jsi::Value(promise);
+}
+
+facebook::jsi::Value DBEngine::rangeQueryAsync(facebook::jsi::Runtime& runtime, const facebook::jsi::Value& args) {
+    if (!args.isObject() || !btree_) {
+        return facebook::jsi::Value::promiseReject(runtime, std::runtime_error("Invalid state"));
+    }
+
+    facebook::jsi::Object obj = args.asObject(runtime);
+    std::string startKey = obj.getProperty(runtime, "startKey").asString(runtime).utf8(runtime);
+    std::string endKey = obj.getProperty(runtime, "endKey").asString(runtime).utf8(runtime);
+
+    auto promise = facebook::jsi::Promise::create(runtime);
+
+    if (!thread_pool_) {
+        thread_pool_ = std::make_unique<ThreadPool>(2);
+    }
+
+    thread_pool_->enqueue([this, &runtime, startKey, endKey, promise]() {
+        std::shared_lock lock(rw_mutex_);
+
+        try {
+            auto results = rangeQuery(runtime, startKey, endKey);
+            auto arr = facebook::jsi::Array(runtime, results.size());
+
+            for (size_t i = 0; i < results.size(); i++) {
+                auto obj = facebook::jsi::Object(runtime);
+                obj.setProperty(runtime, "key", facebook::jsi::String::createFromUtf8(runtime, results[i].first));
+                obj.setProperty(runtime, "value", results[i].second);
+                arr.setValueAtIndex(runtime, i, obj);
+            }
+
+            lock.unlock();
+            promise.resolve(runtime, arr);
+        } catch (const std::exception& e) {
+            lock.unlock();
+            promise.reject(runtime, facebook::jsi::String::createFromUtf8(runtime, e.what()));
+        }
+    });
+
+    return facebook::jsi::Value(promise);
+}
+
+facebook::jsi::Value DBEngine::getAllKeysAsync(facebook::jsi::Runtime& runtime) {
+    auto promise = facebook::jsi::Promise::create(runtime);
+
+    if (!thread_pool_) {
+        thread_pool_ = std::make_unique<ThreadPool>(2);
+    }
+
+    thread_pool_->enqueue([this, &runtime, promise]() {
+        std::shared_lock lock(rw_mutex_);
+
+        try {
+            auto keys = getAllKeys();
+            auto arr = facebook::jsi::Array(runtime, keys.size());
+
+            for (size_t i = 0; i < keys.size(); i++) {
+                arr.setValueAtIndex(runtime, i, facebook::jsi::String::createFromUtf8(runtime, keys[i]));
+            }
+
+            lock.unlock();
+            promise.resolve(runtime, arr);
+        } catch (const std::exception& e) {
+            lock.unlock();
+            promise.reject(runtime, facebook::jsi::String::createFromUtf8(runtime, e.what()));
+        }
+    });
+
+    return facebook::jsi::Value(promise);
 }
 
 }

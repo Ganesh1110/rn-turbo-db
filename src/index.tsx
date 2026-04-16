@@ -12,13 +12,22 @@ declare const global: {
     setMulti(entries: Record<string, any>): boolean;
     getMultiple(keys: string[]): Record<string, any>;
     remove(key: string): boolean;
+    del(key: string): boolean;
     deleteAll(): boolean;
+    benchmark(): number;
     rangeQuery(
       startKey: string,
       endKey: string
     ): Array<{ key: string; value: any }>;
     getAllKeys(): string[];
     flush(): void;
+    setMultiAsync(entries: Record<string, any>): Promise<boolean>;
+    getMultipleAsync(keys: string[]): Promise<Record<string, any>>;
+    rangeQueryAsync(args: {
+      startKey: string;
+      endKey: string;
+    }): Promise<Array<{ key: string; value: any }>>;
+    getAllKeysAsync(): Promise<string[]>;
   };
 };
 
@@ -119,9 +128,19 @@ export class SecureDB {
     return global.NativeDB.remove(key);
   }
 
+  del(key: string): boolean {
+    this.ensureInitialized();
+    return global.NativeDB.del(key);
+  }
+
   deleteAll(): boolean {
     this.ensureInitialized();
     return global.NativeDB.deleteAll();
+  }
+
+  benchmark(): number {
+    this.ensureInitialized();
+    return global.NativeDB.benchmark();
   }
 
   rangeQuery(startKey: string, endKey: string): RangeQueryResult[] {
@@ -142,6 +161,29 @@ export class SecureDB {
   flush(): void {
     this.ensureInitialized();
     global.NativeDB.flush();
+  }
+
+  async setMultiAsync(entries: Record<string, any>): Promise<boolean> {
+    this.ensureInitialized();
+    return global.NativeDB.setMultiAsync(entries);
+  }
+
+  async getMultipleAsync(keys: string[]): Promise<Record<string, any>> {
+    this.ensureInitialized();
+    return global.NativeDB.getMultipleAsync(keys);
+  }
+
+  async rangeQueryAsync(
+    startKey: string,
+    endKey: string
+  ): Promise<RangeQueryResult[]> {
+    this.ensureInitialized();
+    return global.NativeDB.rangeQueryAsync({ startKey, endKey });
+  }
+
+  async getAllKeysAsync(): Promise<string[]> {
+    this.ensureInitialized();
+    return global.NativeDB.getAllKeysAsync();
   }
 }
 
