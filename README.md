@@ -163,6 +163,25 @@ _Tested on iPhone 15 Pro / Pixel 8. Operations per 1000 items._
 | `db.clear()` / `db.deleteAll()`     | Clear all data        | Native, Web      |
 | `db.flush()`                        | Force write to disk   | Native only      |
 | `db.benchmark()`                    | Performance benchmark | Native only      |
+| `TurboDB.install()`                 | Initialize JSI        | Native only      |
+| `TurboDB.getDocumentsDirectory()`   | Get data directory    | Native, Web      |
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**"Native module 'TurboDB' not found"**
+
+- Ensure you've rebuilt the native app: `npx react-native run-ios` or `npx react-native run-android`
+- Verify New Architecture is enabled in `gradle.properties` (Android) or `Podfile` (iOS)
+
+**Slow performance on first launch**
+
+- First run includes key generation and initialization. Subsequent launches are faster.
+
+**Data not persisting after app update**
+
+- TurboDB stores data in app's documents directory. Data persists across updates.
 
 ## 🤝 Contributing
 
