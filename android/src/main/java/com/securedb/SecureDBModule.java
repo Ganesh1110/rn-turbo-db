@@ -1,60 +1,37 @@
 package com.securedb;
 
-import androidx.annotation.NonNull;
+import com.facebook.fbreact.specs.NativeSecureDBSpec;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.module.annotations.ReactModule;
-import com.facebook.react.turbomodule.core.interfaces.TurboModule;
+import java.io.File;
 
-@ReactModule(name = SecureDBModule.NAME)
 public class SecureDBModule extends NativeSecureDBSpec {
-    public static final String NAME = "SecureDB";
+  static {
+    System.loadLibrary("react-native-secure-db");
+  }
 
-    public SecureDBModule(ReactApplicationContext reactContext) {
-        super(reactContext);
-        KeyStoreManager.setContext(reactContext);
+  public SecureDBModule(ReactApplicationContext reactContext) {
+    super(reactContext);
+    KeyStoreManager.init(reactContext);
+  }
+
+  @Override
+  public void install() {
+    long jsiRuntimePointer = getReactApplicationContext().getJavaScriptContextHolder().get();
+    if (jsiRuntimePointer != 0) {
+      nativeInstall(jsiRuntimePointer, 1);
     }
+  }
 
-    @Override
-    @NonNull
-    public String getName() {
-        return NAME;
-    }
+  @Override
+  public String getDocumentsDirectory() {
+    File docsDir = getReactApplicationContext().getFilesDir();
+    return docsDir.getAbsolutePath();
+  }
 
-    static {
-        try {
-            System.loadLibrary("sodium");
-            System.loadLibrary("react-native-secure-db");
-        } catch (UnsatisfiedLinkError e) {
-            android.util.Log.e("SecureDB", "Failed to load native libraries", e);
-        }
-    }
+  @Override
+  public String getVersion() {
+    return "0.1.0";
+  }
 
-    private native void nativeInstall(long jsiRuntimePointer, int installMode);
-
-    @Override
-    public void install() {
-        ReactApplicationContext context = getReactApplicationContext();
-        if (context != null && context.getJavaScriptContextHolder() != null) {
-            long jsiRuntimePointer = context.getJavaScriptContextHolder().get();
-            if (jsiRuntimePointer != 0) {
-                int mode = 0; // Default mode
-                android.util.Log.i("SecureDB", "Installing JSI Engine with runtime pointer: " + jsiRuntimePointer + ", mode: " + mode);
-                nativeInstall(jsiRuntimePointer, mode);
-            } else {
-                android.util.Log.e("SecureDB", "JSI Runtime pointer is null (0)");
-            }
-        } else {
-            android.util.Log.e("SecureDB", "ReactContext or JavaScriptContextHolder is null");
-        }
-    }
-
-    @Override
-    public String getDocumentsDirectory() {
-        return getReactApplicationContext().getFilesDir().getAbsolutePath();
-    }
-
-    @Override
-    public String getVersion() {
-        return "1.0.0";
-    }
+  private native void nativeInstall(long jsiRuntimePointer, int installMode);
 }

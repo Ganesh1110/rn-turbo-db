@@ -126,7 +126,8 @@
     "type": "modules",
     "jsSrcsDir": "src",
     "outputDir": {
-      "ios": "ios/generated"
+      "ios": "ios/generated",
+      "android": "android/generated"
     },
     "android": {
       "javaPackageName": "com.securedb"

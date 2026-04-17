@@ -471,7 +471,9 @@ bool DBEngine::verifyHealth() {
 
     // Check bounds
     if (header.next_free_offset > mmap_->getSize()) {
-        LOGE("next_free_offset %zu exceeds mmap size %zu", header.next_free_offset, mmap_->getSize());
+        LOGE("next_free_offset %llu exceeds mmap size %llu", 
+             (unsigned long long)header.next_free_offset, 
+             (unsigned long long)mmap_->getSize());
         return false;
     }
 
@@ -541,6 +543,17 @@ std::string DBEngine::getWALPath() const {
 }
 
 bool DBEngine::initStorage(const std::string& path, size_t size) {
+    LOGI("initStorage: path=%s, size=%zu", path.c_str(), size);
+    
+    // Reset any existing state to ensure clean initialization
+    if (btree_) btree_.reset();
+    if (pbtree_) pbtree_.reset();
+    if (wal_) wal_.reset();
+    if (mmap_) {
+        mmap_->close();
+        mmap_.reset();
+    }
+    
     if (!mmap_) {
         mmap_ = std::make_unique<MMapRegion>();
     }
@@ -548,9 +561,7 @@ bool DBEngine::initStorage(const std::string& path, size_t size) {
         mmap_->init(path, size);
 
         // Initialize WAL Manager
-        if (!wal_) {
-            wal_ = std::make_unique<WALManager>(path, crypto_.get());
-        }
+        wal_ = std::make_unique<WALManager>(path, crypto_.get());
 
         // Initialize Persistent B+ Tree
         pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
@@ -575,6 +586,7 @@ bool DBEngine::initStorage(const std::string& path, size_t size) {
             btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
         }
 
+        LOGI("initStorage success");
         return true;
     } catch(const std::exception& e) {
         LOGE("initStorage exception: %s, triggering repair", e.what());
@@ -597,7 +609,11 @@ std::string DBEngine::read(size_t offset, size_t length) {
 }
 
 facebook::jsi::Value DBEngine::insertRec(facebook::jsi::Runtime& runtime, const std::string& key, const facebook::jsi::Value& obj) {
-    if (!btree_ || !mmap_) return facebook::jsi::Value(false);
+    std::shared_lock lock(rw_mutex_);
+    if (!btree_ || !mmap_) {
+        LOGE("insertRec: btree or mmap is null");
+        return facebook::jsi::Value(false);
+    }
     return this->insertRecInternal(runtime, key, obj, true);
 }
 
@@ -608,6 +624,7 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
     }
     
     try {
+        LOGI("insertRecInternal: key=%s", key.c_str());
         // Step 1: Use reusable ArenaAllocator avoiding std::bad_alloc/new leakages
         arena_.reset();
         BinarySerializer::serialize(runtime, obj, arena_);
@@ -658,6 +675,7 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
             wal_->sync();
         }
         
+        LOGI("insertRecInternal: success for key=%s", key.c_str());
         return facebook::jsi::Value(true);
     } catch (const std::exception& e) {
         LOGE("insertRec error: %s", e.what());
@@ -669,11 +687,19 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
 }
 
 facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const std::string& key) {
-    if (!btree_ || !mmap_) return facebook::jsi::Value::undefined();
+    std::shared_lock lock(rw_mutex_);
+    if (!btree_ || !mmap_) {
+        LOGE("findRec: btree or mmap is null");
+        return facebook::jsi::Value::undefined();
+    }
 
     try {
+        LOGI("findRec: key=%s", key.c_str());
         size_t offset = btree_->find(key);
-        if (offset == 0) return facebook::jsi::Value::undefined();
+        if (offset == 0) {
+            LOGI("findRec: key=%s not found", key.c_str());
+            return facebook::jsi::Value::undefined();
+        }
 
         const uint8_t* len_ptr = mmap_->get_address(offset);
         if (!len_ptr) return facebook::jsi::Value::undefined();
@@ -719,6 +745,7 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
 
         auto [val, consumed] = BinarySerializer::deserialize(runtime, decrypted->data(), decrypted->size());
 
+        LOGI("findRec: key=%s success", key.c_str());
         return std::move(val);
     } catch (const CorruptionException& e) {
         LOGE("findRec corruption: %s", e.what());
@@ -734,6 +761,7 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
 }
 
 bool DBEngine::clearStorage() {
+    LOGI("clearStorage: starting");
     if (!mmap_) return false;
     
     // Note: Already holding rw_mutex_ from JSI call, don't re-lock
@@ -741,15 +769,18 @@ bool DBEngine::clearStorage() {
     std::string path = mmap_->getPath();
     size_t size = mmap_->getSize();
     
-    // 1. Close current mapping and reset all managers
-    mmap_->close();
+    // 1. Reset all managers and close mapping
+    LOGI("clearStorage: resetting managers");
     if (btree_) btree_.reset();
     if (pbtree_) pbtree_.reset();
-    if (wal_) {
-        wal_.reset();
+    if (wal_) wal_.reset();
+    if (mmap_) {
+        mmap_->close();
+        mmap_.reset();
     }
     
     // 2. Remove files
+    LOGI("clearStorage: removing files at %s", path.c_str());
     std::remove(path.c_str());
     std::remove((path + ".idx").c_str());
     std::remove((path + ".wal").c_str());
@@ -757,10 +788,17 @@ bool DBEngine::clearStorage() {
     next_free_offset_ = 1024 * 1024; // Reset to default start offset
 
     // 3. Re-initialize
-    return initStorage(path, size);
+    LOGI("clearStorage: re-initializing storage");
+    bool result = initStorage(path, size);
+    LOGI("clearStorage finished with result: %d", result);
+    return result;
 }
 
 void installDBEngine(facebook::jsi::Runtime& runtime, std::shared_ptr<facebook::react::CallInvoker> js_invoker, std::unique_ptr<SecureCryptoContext> crypto) {
+    if (runtime.global().hasProperty(runtime, "NativeDB")) {
+        LOGI("installDBEngine: NativeDB already installed, skipping");
+        return;
+    }
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "SecureDB", "installDBEngine: creating HostObject");
 #endif
@@ -874,13 +912,21 @@ facebook::jsi::Value DBEngine::getMultiple(facebook::jsi::Runtime& runtime, cons
 }
 
 bool DBEngine::remove(const std::string& key) {
-    if (!btree_ || !pbtree_) return false;
+    if (!btree_ || !pbtree_ || !mmap_) {
+        LOGE("remove: btree, pbtree or mmap is null");
+        return false;
+    }
     
+    LOGI("remove: key=%s", key.c_str());
     size_t offset = btree_->find(key);
-    if (offset == 0) return false;
+    if (offset == 0) {
+        LOGI("remove: key=%s not found", key.c_str());
+        return false;
+    }
     
     btree_->insert(key, 0); // Correctly update buffered tree with 0 offset (deleted)
     btree_->flush(); // Sync deletion to disk immediately
+    LOGI("remove: key=%s success", key.c_str());
     return true;
 }
 
