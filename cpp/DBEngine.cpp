@@ -627,17 +627,31 @@ facebook::jsi::Value DBEngine::insertRec(facebook::jsi::Runtime& runtime, const 
     #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "TurboDB", "insertRec: called with key=%s", key.c_str());
     #endif
-    std::shared_lock lock(rw_mutex_);
-    if (!btree_ || !mmap_) {
+    try {
+        std::unique_lock lock(rw_mutex_);
         #ifdef __ANDROID__
-        __android_log_print(ANDROID_LOG_ERROR, "TurboDB", "insertRec: btree or mmap is null");
+        __android_log_print(ANDROID_LOG_INFO, "TurboDB", "insertRec: got lock");
         #endif
-        return facebook::jsi::Value(false);
+        if (!btree_ || !mmap_) {
+            #ifdef __ANDROID__
+            __android_log_print(ANDROID_LOG_ERROR, "TurboDB", "insertRec: btree or mmap is null btree=%p mmap=%p", (void*)btree_.get(), (void*)mmap_.get());
+            #endif
+            return facebook::jsi::Value(false);
+        }
+        #ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "TurboDB", "insertRec: calling insertRecInternal");
+        #endif
+        return this->insertRecInternal(runtime, key, obj, true);
+    } catch (const std::exception& e) {
+        #ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "TurboDB", "insertRec exception: %s", e.what());
+        #endif
+    } catch (...) {
+        #ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "TurboDB", "insertRec unknown exception");
+        #endif
     }
-    #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_INFO, "TurboDB", "insertRec: calling insertRecInternal");
-    #endif
-    return this->insertRecInternal(runtime, key, obj, true);
+    return facebook::jsi::Value(false);
 }
 
 facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime, const std::string& key, const facebook::jsi::Value& obj, bool shouldCommit) {
