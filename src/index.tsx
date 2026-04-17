@@ -1,7 +1,10 @@
-import { TurboModuleRegistry } from 'react-native';
+import { TurboModuleRegistry, NativeModules } from 'react-native';
 import type { Spec } from './NativeTurboDB';
 
-const NativeTurboDB = TurboModuleRegistry.get<Spec>('TurboDB');
+const NativeTurboDB =
+  TurboModuleRegistry.get<Spec>('TurboDB') || (NativeModules as any).TurboDB;
+
+console.log('TurboDB: NativeTurboDB module:', NativeTurboDB);
 
 declare const global: {
   NativeDB: {
@@ -42,6 +45,7 @@ export interface RangeQueryResult {
 
 export class TurboDB {
   static install(): void {
+    console.log('TurboDB.install: called');
     if (!NativeTurboDB) {
       console.error(
         "TurboDB: Native module 'TurboDB' not found. " +
@@ -50,7 +54,12 @@ export class TurboDB {
       );
       return;
     }
+    console.log('TurboDB.install: calling NativeTurboDB.install()');
     NativeTurboDB.install();
+    console.log(
+      'TurboDB.install: done, global.NativeDB =',
+      typeof global.NativeDB
+    );
   }
 
   static getDocumentsDirectory(): string {
@@ -66,6 +75,10 @@ export class TurboDB {
   ) {}
 
   private ensureInitialized() {
+    console.log(
+      'TurboDB.ensureInitialized: start, isInitialized =',
+      this.isInitialized
+    );
     if (!this.isInitialized) {
       if (!NativeTurboDB) {
         throw new Error(
@@ -76,6 +89,12 @@ export class TurboDB {
       // Try to install and check for NativeDB
       for (let i = 0; i < 3; i++) {
         TurboDB.install();
+        console.log(
+          'TurboDB.ensureInitialized: install attempt',
+          i,
+          'global.NativeDB =',
+          typeof global.NativeDB
+        );
         if (typeof global.NativeDB !== 'undefined') {
           break;
         }
@@ -91,11 +110,21 @@ export class TurboDB {
         );
       }
 
+      console.log(
+        'TurboDB.ensureInitialized: calling initStorage',
+        this.path,
+        this.size
+      );
       const success = global.NativeDB.initStorage(this.path, this.size);
+      console.log('TurboDB.ensureInitialized: initStorage result =', success);
       if (!success) {
         throw new Error(`Failed to initialize TurboDB at ${this.path}`);
       }
       this.isInitialized = true;
+      console.log(
+        'TurboDB.ensureInitialized: done, isInitialized =',
+        this.isInitialized
+      );
     }
   }
 
@@ -103,16 +132,19 @@ export class TurboDB {
 
   has(key: string): boolean {
     this.ensureInitialized();
+    console.log('TurboDB.has:', key);
     return global.NativeDB.findRec(key) !== undefined;
   }
 
   set(key: string, value: any): boolean {
     this.ensureInitialized();
+    console.log('TurboDB.set:', key, 'value:', typeof value);
     return global.NativeDB.insertRec(key, value);
   }
 
   get<T = any>(key: string): T | undefined {
     this.ensureInitialized();
+    console.log('TurboDB.get:', key);
     return global.NativeDB.findRec(key);
   }
 
