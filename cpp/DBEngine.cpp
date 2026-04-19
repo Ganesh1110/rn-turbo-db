@@ -405,6 +405,37 @@ if (propName == "getAllKeysAsync") {
         );
     }
 
+    if (propName == "setSkipEncryption") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                bool skip = args[0].asBool();
+                this->setSkipEncryption(skip);
+                return facebook::jsi::Value::undefined();
+            }
+        );
+    }
+
+    if (propName == "getCacheStats") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                std::string stats = this->getCacheStats();
+                return facebook::jsi::String::createFromUtf8(runtime, stats);
+            }
+        );
+    }
+
+    if (propName == "clearCache") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& runtime, const facebook::jsi::Value& thisValue, const facebook::jsi::Value* args, size_t count) -> facebook::jsi::Value {
+                this->clearCache();
+                return facebook::jsi::Value::undefined();
+            }
+        );
+    }
+
     return facebook::jsi::Value::undefined();
 }
 
@@ -433,6 +464,9 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(facebook::jsi:
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "verifyHealth"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "repair"));
     names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setSecureMode"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "setSkipEncryption"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "getCacheStats"));
+    names.push_back(facebook::jsi::PropNameID::forAscii(runtime, "clearCache"));
     return names;
 }
 
@@ -468,6 +502,39 @@ void DBEngine::setSecureMode(bool enable) {
         } else {
             wal_->clear();
         }
+    }
+}
+
+void DBEngine::setSkipEncryption(bool skip) {
+    std::unique_lock lock(rw_mutex_);
+    skip_encryption_ = skip;
+}
+
+std::string DBEngine::getCacheStats() const {
+    std::shared_lock lock(rw_mutex_);
+    std::string stats;
+    if (lru_cache_) {
+        stats += "lru_hits:" + std::to_string(lru_cache_->hits()) + ",";
+        stats += "lru_misses:" + std::to_string(lru_cache_->misses()) + ",";
+        stats += "lru_size:" + std::to_string(lru_cache_->size());
+    }
+    if (write_buffer_) {
+        stats += ",write_buffer_size:" + std::to_string(write_buffer_->size());
+    }
+    if (read_ahead_buffer_) {
+        stats += ",read_ahead_size:" + std::to_string(read_ahead_buffer_->size());
+    }
+    return stats;
+}
+
+void DBEngine::clearCache() {
+    std::unique_lock lock(rw_mutex_);
+    if (lru_cache_) {
+        lru_cache_->clear();
+        lru_cache_->resetStats();
+    }
+    if (read_ahead_buffer_) {
+        read_ahead_buffer_->clear();
     }
 }
 
@@ -532,6 +599,15 @@ bool DBEngine::repairInternal() {
         pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
         pbtree_->init();
         btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
+        
+        lru_cache_ = std::make_unique<LRUCache>(1024);
+        write_buffer_ = std::make_unique<WriteBuffer>(4096, 100);
+        read_ahead_buffer_ = std::make_unique<ReadAheadBuffer>(2048, 16);
+        
+        if (!batch_wal_ && wal_) {
+            batch_wal_ = std::make_unique<BatchWALManager>(wal_.get(), 64, 10);
+            batch_wal_->startAutoFlush();
+        }
 
         LOGI("Database repair complete");
         return true;
@@ -601,6 +677,16 @@ bool DBEngine::initStorage(const std::string& path, size_t size) {
             btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
         }
 
+        // Initialize performance optimization components
+        lru_cache_ = std::make_unique<LRUCache>(1024); // 1024 entries
+        write_buffer_ = std::make_unique<WriteBuffer>(4096, 100);
+        read_ahead_buffer_ = std::make_unique<ReadAheadBuffer>(2048, 16);
+        
+        if (!batch_wal_ && wal_) {
+            batch_wal_ = std::make_unique<BatchWALManager>(wal_.get(), 64, 10);
+            batch_wal_->startAutoFlush();
+        }
+
         LOGI("initStorage success");
         return true;
     } catch(const std::exception& e) {
@@ -648,7 +734,8 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
         const uint8_t* payload_ptr = arena_.data();
         std::vector<uint8_t> encrypted;
 
-        if (crypto_) {
+        // Use zero-copy optimization: skip encryption if skip_encryption_ is enabled
+        if (!skip_encryption_ && crypto_) {
             encrypted = crypto_->encrypt(arena_.data(), serialized_size);
             payload_ptr = encrypted.data();
             payload_len = encrypted.size();
@@ -663,10 +750,16 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
         }
 
         if (is_secure_mode_ && wal_) {
-            wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-            wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
-            wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
-            wal_->sync();
+            if (batch_wal_) {
+                batch_wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
+                batch_wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+                batch_wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+            } else {
+                wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
+                wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+                wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+                wal_->sync();
+            }
         }
 
         // Format: [LEN (4)][PAYLOAD][CRC32 (4)]
@@ -682,8 +775,12 @@ facebook::jsi::Value DBEngine::insertRecInternal(facebook::jsi::Runtime& runtime
         btree_->insert(key, offset);
 
         if (shouldCommit && is_secure_mode_ && wal_) {
-            wal_->logCommit();
-            wal_->sync();
+            if (batch_wal_) {
+                batch_wal_->logCommit();
+            } else {
+                wal_->logCommit();
+                wal_->sync();
+            }
         }
         
         return facebook::jsi::Value(true);
@@ -703,6 +800,17 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
 
     try {
         LOGI("findRec: key=%s", key.c_str());
+        
+        // Check LRU cache first for hot keys
+        if (lru_cache_) {
+            auto* cached = lru_cache_->get(key);
+            if (cached && !cached->data.empty()) {
+                LOGI("findRec: cache hit for key=%s", key.c_str());
+                auto [val, consumed] = BinarySerializer::deserialize(runtime, cached->data.data(), cached->data.size());
+                return std::move(val);
+            }
+        }
+        
         size_t offset = btree_->find(key);
         if (offset == 0) {
             LOGI("findRec: key=%s not found", key.c_str());
@@ -739,11 +847,18 @@ facebook::jsi::Value DBEngine::findRec(facebook::jsi::Runtime& runtime, const st
         }
 
         std::shared_ptr<std::vector<uint8_t>> decrypted;
-        if (crypto_) {
+        
+        // Use zero-copy optimization: skip decryption if skip_encryption_ is enabled
+        if (skip_encryption_ || !crypto_) {
+            decrypted = std::make_shared<std::vector<uint8_t>>(payload_ptr, payload_ptr + payload_len);
+        } else {
             auto decrypted_vec = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
             decrypted = std::make_shared<std::vector<uint8_t>>(std::move(decrypted_vec));
-        } else {
-            decrypted = std::make_shared<std::vector<uint8_t>>(payload_ptr, payload_ptr + payload_len);
+        }
+
+        // Add to LRU cache
+        if (lru_cache_ && !decrypted->empty()) {
+            lru_cache_->put(key, decrypted->data(), decrypted->size(), offset, !skip_encryption_);
         }
 
         if (!decrypted->empty() && static_cast<BinaryType>((*decrypted)[0]) == BinaryType::Object) {

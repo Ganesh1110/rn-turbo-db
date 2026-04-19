@@ -15,6 +15,11 @@
 #include "SecureCryptoContext.h"
 #include "ThreadPool.h"
 #include "WALManager.h"
+#include "LRUCache.h"
+#include "WriteBuffer.h"
+#include "ReadAheadBuffer.h"
+#include "MemoryView.h"
+#include "BatchWALManager.h"
 
 namespace turbo_db {
 
@@ -88,19 +93,28 @@ private:
     std::unique_ptr<PersistentBPlusTree> pbtree_;
     std::unique_ptr<BufferedBTree> btree_;
     std::unique_ptr<WALManager> wal_;
+    std::unique_ptr<LRUCache> lru_cache_;
+    std::unique_ptr<WriteBuffer> write_buffer_;
+    std::unique_ptr<ReadAheadBuffer> read_ahead_buffer_;
+    std::unique_ptr<BatchWALManager> batch_wal_;
     size_t next_free_offset_;
     ArenaAllocator arena_;
     std::unique_ptr<ThreadPool> thread_pool_;
     std::shared_ptr<facebook::react::CallInvoker> js_invoker_;
     bool is_secure_mode_ = true;
     bool needs_repair_ = false;
+    bool skip_encryption_ = false;
 
     void setSecureMode(bool enable);
+    void setSkipEncryption(bool skip);
     bool repair();
     bool repairInternal();
     bool verifyHealth();
     std::string getDatabasePath() const;
     std::string getWALPath() const;
+    
+    std::string getCacheStats() const;
+    void clearCache();
 };
 
 void installDBEngine(
