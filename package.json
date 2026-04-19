@@ -68,14 +68,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ganeshjayaprakash/react-native-turbo-db.git"
+    "url": "https://github.com/Ganesh1110/react-native-turbo-db.git"
   },
   "author": "Ganesh Jayaprakash <ganesh@example.com> (https://github.com/ganeshjayaprakash)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/ganeshjayaprakash/react-native-turbo-db/issues"
+    "url": "https://github.com/Ganesh1110/react-native-turbo-db/issues"
   },
-  "homepage": "https://github.com/ganeshjayaprakash/react-native-turbo-db#readme",
+  "homepage": "https://github.com/Ganesh1110/react-native-turbo-db#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
