@@ -32,6 +32,10 @@ declare const global: {
     }): Promise<Array<{ key: string; value: any }>>;
     getAllKeysAsync(): Promise<string[]>;
     removeAsync(key: string): Promise<boolean>;
+    // ── Sync APIs ──
+    getLocalChangesAsync(lastSyncClock: number): Promise<any>;
+    applyRemoteChangesAsync(changes: any[]): Promise<boolean>;
+    markPushedAsync(acks: any[]): Promise<boolean>;
     // ── Diagnostics ──
     verifyHealth(): boolean;
     repair(): boolean;
@@ -50,6 +54,9 @@ declare const global: {
 };
 
 export type DBMode = 'secure' | 'turbo';
+
+export { SyncManager } from './SyncManager';
+export type { SyncAdapter, SyncRecord, SyncChanges, SyncAck, SyncOptions, SyncEvent } from './SyncManager';
 
 export interface RangeQueryResult {
   key: string;

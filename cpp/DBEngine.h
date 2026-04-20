@@ -17,6 +17,7 @@
 #include "DBScheduler.h"
 #include "Compactor.h"
 #include "TurboDBError.h"
+#include "SyncMetadata.h"
 
 namespace turbo_db {
 
@@ -42,7 +43,7 @@ public:
     double benchmark();
 
     // Storage init
-    bool initStorage(const std::string& path, size_t size);
+    bool initStorage(const std::string& path, size_t size, bool enableSync = false);
 
     // Raw mmap access (legacy)
     void write(size_t offset, const std::string& data);
@@ -78,6 +79,14 @@ public:
     facebook::jsi::Value getAllKeysAsync(facebook::jsi::Runtime& runtime);
     facebook::jsi::Value removeAsync(facebook::jsi::Runtime& runtime,
                                       const facebook::jsi::Value& args);
+
+    // ── Sync Engine API ──
+    facebook::jsi::Value getLocalChangesAsync(facebook::jsi::Runtime& runtime,
+                                              const facebook::jsi::Value& args);
+    facebook::jsi::Value applyRemoteChangesAsync(facebook::jsi::Runtime& runtime,
+                                                 const facebook::jsi::Value& args);
+    facebook::jsi::Value markPushedAsync(facebook::jsi::Runtime& runtime,
+                                         const facebook::jsi::Value& args);
 
     // Query ops (sync)
     std::vector<std::pair<std::string, facebook::jsi::Value>> rangeQuery(
@@ -115,9 +124,18 @@ private:
     // Byte-level insert called from async path (no jsi::Runtime needed)
     bool insertRecBytes(const std::string& key,
                          const std::vector<uint8_t>& bytes,
-                         bool shouldCommit = true);
+                         bool shouldCommit = true,
+                         bool is_tombstone = false,
+                         SyncMetadata* explicit_meta = nullptr);
 
     bool repairInternal();
+
+    // Internal Sync Utils
+    uint64_t nextLogicalClock() {
+        return logical_clock_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void initializeLogicalClock();
+    void writeOpLog(uint64_t clock, const std::string& key);
 
     mutable std::shared_mutex rw_mutex_;
     std::chrono::high_resolution_clock::time_point start_time_;
@@ -125,6 +143,11 @@ private:
     std::unique_ptr<MMapRegion> mmap_;
     std::unique_ptr<PersistentBPlusTree> pbtree_;
     std::unique_ptr<BufferedBTree> btree_;
+    
+    // Sync OpLog tree
+    std::unique_ptr<PersistentBPlusTree> oplog_pbtree_;
+    std::unique_ptr<BufferedBTree> oplog_btree_;
+
     std::unique_ptr<WALManager> wal_;
     std::unique_ptr<DBScheduler> scheduler_;
     std::unique_ptr<Compactor> compactor_;
@@ -133,7 +156,9 @@ private:
     ArenaAllocator arena_;
     std::shared_ptr<facebook::react::CallInvoker> js_invoker_;
     bool is_secure_mode_ = true;
+    bool sync_enabled_ = false;
     bool needs_repair_ = false;
+    std::atomic<uint64_t> logical_clock_{1};
 };
 
 void installDBEngine(

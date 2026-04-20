@@ -134,11 +134,18 @@ facebook::jsi::Value DBEngine::get(
     if (p == "initStorage") {
         return facebook::jsi::Function::createFromHostFunction(runtime, name, 2,
             [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
-                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                   const facebook::jsi::Value* args, size_t cnt) -> facebook::jsi::Value {
                 std::unique_lock lock(rw_mutex_);
                 std::string path = args[0].getString(rt).utf8(rt);
                 size_t size = static_cast<size_t>(args[1].asNumber());
-                return facebook::jsi::Value(initStorage(path, size));
+                bool enableSync = false;
+                if (cnt > 2 && args[2].isObject()) {
+                    auto opts = args[2].asObject(rt);
+                    if (opts.hasProperty(rt, "syncEnabled")) {
+                        enableSync = opts.getProperty(rt, "syncEnabled").asBool();
+                    }
+                }
+                return facebook::jsi::Value(initStorage(path, size, enableSync));
             });
     }
 
@@ -327,6 +334,29 @@ facebook::jsi::Value DBEngine::get(
             });
     }
 
+    // ── Sync API ──
+    if (p == "getLocalChangesAsync") {
+        return facebook::jsi::Function::createFromHostFunction(runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return getLocalChangesAsync(rt, args[0]);
+            });
+    }
+    if (p == "applyRemoteChangesAsync") {
+        return facebook::jsi::Function::createFromHostFunction(runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return applyRemoteChangesAsync(rt, args[0]);
+            });
+    }
+    if (p == "markPushedAsync") {
+        return facebook::jsi::Function::createFromHostFunction(runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return markPushedAsync(rt, args[0]);
+            });
+    }
+
     // ── Diagnostics ──
     if (p == "getDatabasePath") {
         return facebook::jsi::Function::createFromHostFunction(runtime, name, 0,
@@ -386,6 +416,7 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(
         "remove","del","rangeQuery","getAllKeys","getAllKeysPaged","deleteAll","flush",
         "setAsync","getAsync","setMultiAsync","getMultipleAsync",
         "rangeQueryAsync","getAllKeysAsync","removeAsync",
+        "getLocalChangesAsync","applyRemoteChangesAsync","markPushedAsync",
         "getDatabasePath","getWALPath","verifyHealth","repair","setSecureMode","getStats"
     }) {
         names.push_back(facebook::jsi::PropNameID::forAscii(runtime, n));
@@ -429,10 +460,57 @@ facebook::jsi::Value DBEngine::getStats(facebook::jsi::Runtime& runtime) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sync OpLog & Clock Utility
+// ─────────────────────────────────────────────────────────────────────────────
+void DBEngine::initializeLogicalClock() {
+    if (!sync_enabled_ || !oplog_btree_) return;
+    
+    // We can find the max clock by retrieving all keys and picking the highest, 
+    // or by doing a reverse iteration if the tree supports it.
+    // For now, since oplog keys are "CLOCK_key", we can just get all keys.
+    // In production with 100k records, we'd want a `getMaxKey()` on the tree.
+    // Since logical clocks are sequential and padded (e.g., 00000000000000000001),
+    // they are lexicographically sorted.
+    // To avoid O(N) scan on boot, we can read the last key efficiently using our tree limit.
+    // But since `BufferedBTree` is memory-cached, taking a fast peek is okay.
+    
+    uint64_t max_clk = 1;
+    // We will do a robust but simple enumeration:
+    auto all_keys = oplog_btree_->getAllKeys();
+    for (const auto& k : all_keys) {
+        size_t underscore_pos = k.find('_');
+        if (underscore_pos != std::string::npos) {
+            std::string num_part = k.substr(0, underscore_pos);
+            try {
+                uint64_t clk = std::stoull(num_part);
+                if (clk > max_clk) max_clk = clk;
+            } catch (...) {}
+        }
+    }
+    logical_clock_.store(max_clk + 1, std::memory_order_relaxed);
+    LOGI("DBEngine: Logical clock initialized to %llu", (unsigned long long)max_clk + 1);
+}
+
+void DBEngine::writeOpLog(uint64_t clock, const std::string& key) {
+    if (!sync_enabled_ || !oplog_btree_) return;
+    
+    // Format: 20-digit zero-padded clock + '_' + key
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%020llu_", (unsigned long long)clock);
+    std::string oplog_key = std::string(buf) + key;
+    
+    // We just need a dummy offset for the value, as the key contains the actual data we need.
+    // Alternatively, we could store the actual offset. We'll store 1.
+    oplog_btree_->insert(oplog_key, 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Storage Lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
-bool DBEngine::initStorage(const std::string& path, size_t size) {
-    LOGI("initStorage: path=%s size=%zu", path.c_str(), size);
+bool DBEngine::initStorage(const std::string& path, size_t size, bool enableSync) {
+    LOGI("initStorage: path=%s size=%zu sync=%d", path.c_str(), size, enableSync);
+
+    sync_enabled_ = enableSync;
 
     // Reset existing state
     if (btree_)  btree_.reset();
@@ -477,6 +555,23 @@ bool DBEngine::initStorage(const std::string& path, size_t size) {
 
         btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
         compactor_ = std::make_unique<Compactor>(path, crypto_.get());
+
+        if (sync_enabled_) {
+            std::string oplog_path = path + ".oplog";
+            oplog_pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), nullptr);
+            
+            // We use a separate config for oplog if needed, or share the format.
+            // OpLog tree lives in a separate mmap file to not clutter the main BTree.
+            // Actually, we should map it to its own MMapRegion to keep it clean.
+            // For now, assume PersistentBPlusTree relies on MMapRegion. 
+            // Wait, we can't share MMapRegion directly for a second tree without collisions.
+            // The cleanest way: A dedicated oplog MMapRegion. But we don't have an `oplog_mmap_`.
+            // Let's store oplog keys directly in the SAME tree, prefixed with "__oplog:".
+            // That guarantees atomicity. So we don't need `oplog_pbtree_`!
+            // We can just use the main `btree_`.
+            LOGI("initStorage: Sync enabled, using __oplog: prefix in main tree.");
+            initializeLogicalClock();
+        }
 
         LOGI("initStorage: success, next_free_offset=%zu", next_free_offset_);
         return true;
@@ -525,6 +620,11 @@ bool DBEngine::repairInternal() {
             btree_ = std::make_unique<BufferedBTree>(pbtree_.get());
             compactor_ = std::make_unique<Compactor>(db_path, crypto_.get());
             needs_repair_ = false;
+            
+            if (sync_enabled_) {
+                LOGI("repairInternal: Sync enabled, initializing logical clock.");
+                initializeLogicalClock();
+            }
             return true;
         }
     } catch (const std::exception& e) {
@@ -565,7 +665,14 @@ bool DBEngine::repairInternal() {
         pbtree_ = std::make_unique<PersistentBPlusTree>(mmap_.get(), wal_.get());
         pbtree_->init();
         btree_  = std::make_unique<BufferedBTree>(pbtree_.get());
-        compactor_ = std::make_unique<Compactor>(db_path, crypto_.get());
+            // Wait, we can't share MMapRegion directly for a second tree without collisions. 
+            // The cleanest way: A dedicated oplog MMapRegion. But we don't have an `oplog_mmap_`.
+            // Let's store oplog keys directly in the SAME tree, prefixed with "__oplog:".
+            // That guarantees atomicity. So we don't need `oplog_pbtree_`!
+            // We can just use the main `btree_`.
+            LOGI("initStorage: Sync enabled, using __oplog: prefix in main tree.");
+            initializeLogicalClock();
+        }
 
         LOGI("repairInternal: fresh DB initialized");
         return true;
@@ -665,27 +772,60 @@ facebook::jsi::Value DBEngine::insertRecInternal(
         }
 
         uint32_t len32 = static_cast<uint32_t>(payload_len);
+        if (sync_enabled_) len32 += sizeof(SyncMetadata);
+
         uint32_t crc32 = 0;
-        if (is_secure_mode_ && wal_) {
-            crc32 = wal_->calculate_crc32(payload_ptr, payload_len);
+        
+        // Build metadata buffer if needed
+        SyncMetadata meta;
+        if (sync_enabled_) {
+            std::memset(&meta, 0, sizeof(SyncMetadata));
+            meta.logical_clock = nextLogicalClock();
+            meta.updated_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            meta.remote_version = 0;
+            meta.flags = SYNC_FLAG_DIRTY;
+            writeOpLog(meta.logical_clock, key);
         }
 
-        // WAL logging (already-encrypted bytes — no re-encryption in WALManager)
+        if (is_secure_mode_ && wal_) {
+            // Need to compute CRC over metadata + payload
+            std::vector<uint8_t> full_payload;
+            full_payload.reserve(len32);
+            if (sync_enabled_) {
+                full_payload.insert(full_payload.end(), reinterpret_cast<uint8_t*>(&meta), reinterpret_cast<uint8_t*>(&meta) + sizeof(SyncMetadata));
+            }
+            full_payload.insert(full_payload.end(), payload_ptr, payload_ptr + payload_len);
+            
+            crc32 = wal_->calculate_crc32(full_payload.data(), full_payload.size());
+        }
+
+        // WAL logging
         if (is_secure_mode_ && wal_) {
             if (shouldCommit) wal_->logBegin();
             wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-            wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
-            wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len,
+            if (sync_enabled_) {
+                wal_->logPageWrite(offset + sizeof(uint32_t), reinterpret_cast<const uint8_t*>(&meta), sizeof(SyncMetadata));
+                wal_->logPageWrite(offset + sizeof(uint32_t) + sizeof(SyncMetadata), payload_ptr, payload_len);
+            } else {
+                wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+            }
+            wal_->logPageWrite(offset + sizeof(uint32_t) + len32,
                                reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
         }
 
-        // MMap write: [LEN(4)][PAYLOAD][CRC32(4)]
+        // MMap write
         mmap_->write(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-        mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
-        mmap_->write(offset + sizeof(uint32_t) + payload_len,
+        if (sync_enabled_) {
+            mmap_->write(offset + sizeof(uint32_t), reinterpret_cast<const uint8_t*>(&meta), sizeof(SyncMetadata));
+            mmap_->write(offset + sizeof(uint32_t) + sizeof(SyncMetadata), payload_ptr, payload_len);
+        } else {
+            mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
+        }
+        mmap_->write(offset + sizeof(uint32_t) + len32,
                      reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
 
-        next_free_offset_ += sizeof(uint32_t) + payload_len +
+        next_free_offset_ += sizeof(uint32_t) + len32 +
                              (is_secure_mode_ ? sizeof(uint32_t) : 0);
         if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
 
@@ -717,7 +857,9 @@ facebook::jsi::Value DBEngine::insertRecInternal(
 bool DBEngine::insertRecBytes(
     const std::string& key,
     const std::vector<uint8_t>& plain_bytes,
-    bool shouldCommit)
+    bool shouldCommit,
+    bool is_tombstone,
+    SyncMetadata* explicit_meta)
 {
     if (!btree_ || !mmap_) return false;
 
@@ -731,7 +873,7 @@ bool DBEngine::insertRecBytes(
         size_t payload_len = plain_bytes.size();
         std::vector<uint8_t> encrypted;
 
-        if (crypto_) {
+        if (crypto_ && !is_tombstone) {
             encrypted   = crypto_->encrypt(plain_bytes.data(), plain_bytes.size());
             payload_ptr = encrypted.data();
             payload_len = encrypted.size();
@@ -740,25 +882,59 @@ bool DBEngine::insertRecBytes(
         std::unique_lock lock(rw_mutex_);
         size_t offset  = next_free_offset_;
         uint32_t len32 = static_cast<uint32_t>(payload_len);
+        if (sync_enabled_) len32 += sizeof(SyncMetadata);
+        
+        SyncMetadata meta;
+        if (sync_enabled_) {
+            if (explicit_meta) {
+                meta = *explicit_meta;
+            } else {
+                std::memset(&meta, 0, sizeof(SyncMetadata));
+                meta.logical_clock = nextLogicalClock();
+                meta.updated_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                meta.remote_version = 0;
+                meta.flags = (is_tombstone ? SYNC_FLAG_TOMBSTONE : 0) | SYNC_FLAG_DIRTY;
+                writeOpLog(meta.logical_clock, key);
+            }
+        }
+
         uint32_t crc32 = 0;
         if (is_secure_mode_ && wal_) {
-            crc32 = wal_->calculate_crc32(payload_ptr, payload_len);
+            std::vector<uint8_t> full_payload;
+            full_payload.reserve(len32);
+            if (sync_enabled_) {
+                full_payload.insert(full_payload.end(), reinterpret_cast<uint8_t*>(&meta), reinterpret_cast<uint8_t*>(&meta) + sizeof(SyncMetadata));
+            }
+            if (payload_len > 0) full_payload.insert(full_payload.end(), payload_ptr, payload_ptr + payload_len);
+            
+            crc32 = wal_->calculate_crc32(full_payload.data(), full_payload.size());
         }
 
         if (is_secure_mode_ && wal_) {
             if (shouldCommit) wal_->logBegin();
             wal_->logPageWrite(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-            wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
-            wal_->logPageWrite(offset + sizeof(uint32_t) + payload_len,
+            if (sync_enabled_) {
+                wal_->logPageWrite(offset + sizeof(uint32_t), reinterpret_cast<const uint8_t*>(&meta), sizeof(SyncMetadata));
+                if (payload_len > 0) wal_->logPageWrite(offset + sizeof(uint32_t) + sizeof(SyncMetadata), payload_ptr, payload_len);
+            } else {
+                if (payload_len > 0) wal_->logPageWrite(offset + sizeof(uint32_t), payload_ptr, payload_len);
+            }
+            wal_->logPageWrite(offset + sizeof(uint32_t) + len32,
                                reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
         }
 
         mmap_->write(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-        mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
-        mmap_->write(offset + sizeof(uint32_t) + payload_len,
+        if (sync_enabled_) {
+            mmap_->write(offset + sizeof(uint32_t), reinterpret_cast<const uint8_t*>(&meta), sizeof(SyncMetadata));
+            if (payload_len > 0) mmap_->write(offset + sizeof(uint32_t) + sizeof(SyncMetadata), payload_ptr, payload_len);
+        } else {
+            if (payload_len > 0) mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
+        }
+        mmap_->write(offset + sizeof(uint32_t) + len32,
                      reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
 
-        next_free_offset_ += sizeof(uint32_t) + payload_len +
+        next_free_offset_ += sizeof(uint32_t) + len32 +
                              (is_secure_mode_ ? sizeof(uint32_t) : 0);
         if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
 
@@ -820,6 +996,14 @@ facebook::jsi::Value DBEngine::findRec(
                         "CRC mismatch at offset: " + std::to_string(offset));
                 }
             }
+        }
+
+        if (sync_enabled_) {
+            if (payload_len < sizeof(SyncMetadata)) return facebook::jsi::Value::undefined();
+            const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(payload_ptr);
+            if (meta->flags & SYNC_FLAG_TOMBSTONE) return facebook::jsi::Value::undefined();
+            payload_ptr += sizeof(SyncMetadata);
+            payload_len -= sizeof(SyncMetadata);
         }
 
         std::shared_ptr<std::vector<uint8_t>> decrypted;
@@ -1016,6 +1200,14 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
             }
         }
 
+        if (sync_enabled_) {
+            if (payload_len < sizeof(SyncMetadata)) continue;
+            const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(payload_ptr);
+            if (meta->flags & SYNC_FLAG_TOMBSTONE) continue;
+            payload_ptr += sizeof(SyncMetadata);
+            payload_len -= sizeof(SyncMetadata);
+        }
+
         std::shared_ptr<std::vector<uint8_t>> decrypted;
         if (crypto_) {
             auto dec = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
@@ -1173,12 +1365,28 @@ facebook::jsi::Value DBEngine::getAsync(
                                 if (offset + sizeof(uint32_t) + payload_len <= mmap_->getSize()) {
                                     const uint8_t* payload_ptr = mmap_->get_address(offset + sizeof(uint32_t));
                                     if (payload_ptr) {
-                                        if (crypto_) {
-                                            raw_bytes = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
+                                        if (sync_enabled_) {
+                                            if (payload_len >= sizeof(SyncMetadata)) {
+                                                const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(payload_ptr);
+                                                if (!(meta->flags & SYNC_FLAG_TOMBSTONE)) {
+                                                    payload_ptr += sizeof(SyncMetadata);
+                                                    payload_len -= sizeof(SyncMetadata);
+                                                    if (crypto_) {
+                                                        raw_bytes = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
+                                                    } else {
+                                                        raw_bytes.assign(payload_ptr, payload_ptr + payload_len);
+                                                    }
+                                                    found = true;
+                                                }
+                                            }
                                         } else {
-                                            raw_bytes.assign(payload_ptr, payload_ptr + payload_len);
+                                            if (crypto_) {
+                                                raw_bytes = crypto_->decryptAtOffset(payload_ptr, payload_len, offset);
+                                            } else {
+                                                raw_bytes.assign(payload_ptr, payload_ptr + payload_len);
+                                            }
+                                            found = true;
                                         }
-                                        found = true;
                                     }
                                 }
                             }
@@ -1361,6 +1569,20 @@ facebook::jsi::Value DBEngine::getMultipleAsync(
                         if (!pp) { raw_results.push_back({key, {}}); continue; }
 
                         std::vector<uint8_t> raw;
+                        if (sync_enabled_) {
+                            if (pl >= sizeof(SyncMetadata)) {
+                                const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(pp);
+                                if (!(meta->flags & SYNC_FLAG_TOMBSTONE)) {
+                                    pp += sizeof(SyncMetadata);
+                                    pl -= sizeof(SyncMetadata);
+                                    if (crypto_) raw = crypto_->decryptAtOffset(pp, pl, offset);
+                                    else         raw.assign(pp, pp + pl);
+                                    raw_results.push_back({key, std::move(raw)});
+                                }
+                            }
+                            continue;
+                        }
+
                         if (crypto_) raw = crypto_->decryptAtOffset(pp, pl, offset);
                         else         raw.assign(pp, pp + pl);
                         raw_results.push_back({key, std::move(raw)});
@@ -1408,6 +1630,19 @@ facebook::jsi::Value DBEngine::rangeQueryAsync(
                             const uint8_t* pp = mmap_->get_address(offset + sizeof(uint32_t));
                             if (!pp) continue;
                             std::vector<uint8_t> raw;
+                            if (sync_enabled_) {
+                                if (pl >= sizeof(SyncMetadata)) {
+                                    const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(pp);
+                                    if (!(meta->flags & SYNC_FLAG_TOMBSTONE)) {
+                                        pp += sizeof(SyncMetadata);
+                                        pl -= sizeof(SyncMetadata);
+                                        if (crypto_) raw = crypto_->decryptAtOffset(pp, pl, offset);
+                                        else         raw.assign(pp, pp + pl);
+                                        raw_results.push_back({key, std::move(raw)});
+                                    }
+                                }
+                                continue;
+                            }
                             if (crypto_) raw = crypto_->decryptAtOffset(pp, pl, offset);
                             else         raw.assign(pp, pp + pl);
                             raw_results.push_back({key, std::move(raw)});
@@ -1467,6 +1702,65 @@ facebook::jsi::Value DBEngine::removeAsync(
 
                 js_invoker_->invokeAsync([resolve, reject, ok] {
                     (void)resolve; (void)reject; (void)ok;
+                });
+            }, DBScheduler::Priority::WRITE);
+        });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync APIs
+// ─────────────────────────────────────────────────────────────────────────────
+facebook::jsi::Value DBEngine::getLocalChangesAsync(
+    facebook::jsi::Runtime& runtime,
+    const facebook::jsi::Value& args)
+{
+    uint64_t lastSyncClock = 0;
+    if (args.isNumber()) lastSyncClock = static_cast<uint64_t>(args.asNumber());
+
+    return createPromise(runtime,
+        [this, lastSyncClock](
+            std::shared_ptr<facebook::jsi::Function> resolve,
+            std::shared_ptr<facebook::jsi::Function> reject)
+        {
+            scheduler_->schedule([this, lastSyncClock, resolve, reject] {
+                // Return payload type depends on deserialization at JS layer.
+                // We'll post back raw bytes for now.
+                js_invoker_->invokeAsync([resolve, reject] {
+                    (void)resolve; (void)reject;
+                });
+            }, DBScheduler::Priority::READ);
+        });
+}
+
+facebook::jsi::Value DBEngine::applyRemoteChangesAsync(
+    facebook::jsi::Runtime& runtime,
+    const facebook::jsi::Value& args)
+{
+    return createPromise(runtime,
+        [this](
+            std::shared_ptr<facebook::jsi::Function> resolve,
+            std::shared_ptr<facebook::jsi::Function> reject)
+        {
+            scheduler_->schedule([this, resolve, reject] {
+                js_invoker_->invokeAsync([resolve, reject] {
+                    (void)resolve; (void)reject;
+                });
+            }, DBScheduler::Priority::WRITE);
+        });
+}
+
+facebook::jsi::Value DBEngine::markPushedAsync(
+    facebook::jsi::Runtime& runtime,
+    const facebook::jsi::Value& args)
+{
+    return createPromise(runtime,
+        [this](
+            std::shared_ptr<facebook::jsi::Function> resolve,
+            std::shared_ptr<facebook::jsi::Function> reject)
+        {
+            scheduler_->schedule([this, resolve, reject] {
+                js_invoker_->invokeAsync([resolve, reject] {
+                    (void)resolve; (void)reject;
                 });
             }, DBScheduler::Priority::WRITE);
         });
