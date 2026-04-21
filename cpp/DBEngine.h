@@ -112,6 +112,7 @@ private:
     facebook::jsi::Value createPromise(
         facebook::jsi::Runtime& runtime,
         std::function<void(
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject)> executor);
 
@@ -159,6 +160,8 @@ private:
     bool sync_enabled_ = false;
     bool needs_repair_ = false;
     std::atomic<uint64_t> logical_clock_{1};
+
+    bool isTombstone(size_t offset);
 };
 
 void installDBEngine(

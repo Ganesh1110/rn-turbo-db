@@ -28,11 +28,11 @@ DBEngine::DBEngine(
     std::unique_ptr<SecureCryptoContext> crypto)
     : start_time_(std::chrono::high_resolution_clock::now()),
       crypto_(std::move(crypto)),
+      oplog_btree_(nullptr),
       scheduler_(std::make_unique<DBScheduler>()),
       next_free_offset_(1024 * 1024),
       arena_(1024 * 1024),
-      js_invoker_(std::move(js_invoker)),
-      oplog_btree_(nullptr)
+      js_invoker_(std::move(js_invoker))
 {
 }
 
@@ -57,6 +57,7 @@ DBEngine::~DBEngine() {
 facebook::jsi::Value DBEngine::createPromise(
     facebook::jsi::Runtime& runtime,
     std::function<void(
+        facebook::jsi::Runtime& rt,
         std::shared_ptr<facebook::jsi::Function> resolve,
         std::shared_ptr<facebook::jsi::Function> reject)> executor)
 {
@@ -89,7 +90,7 @@ facebook::jsi::Value DBEngine::createPromise(
 
     // Now call the user executor with the resolved references
     if (*resolveRef && *rejectRef) {
-        executor(*resolveRef, *rejectRef);
+        executor(runtime, *resolveRef, *rejectRef);
     }
 
     return promise;
@@ -514,6 +515,7 @@ bool DBEngine::initStorage(const std::string& path, size_t size, bool enableSync
 
     // Reset existing state
     if (btree_)  btree_.reset();
+    oplog_btree_ = nullptr; // Reset the pointer before any new initialization
     if (pbtree_) pbtree_.reset();
     if (wal_)    wal_.reset();
     if (mmap_) { mmap_->close(); mmap_.reset(); }
@@ -1137,21 +1139,38 @@ facebook::jsi::Value DBEngine::getMultiple(
 
 bool DBEngine::remove(const std::string& key) {
     if (!btree_ || !pbtree_ || !mmap_) return false;
-    size_t offset = btree_->find(key);
+    
+    size_t offset = 0;
+    {
+        std::shared_lock lock(rw_mutex_);
+        offset = btree_->find(key);
+    }
+
     if (offset == 0) return false;
 
     // Track live bytes removal for compactor
-    if (compactor_ && offset > 0) {
-        const uint8_t* len_ptr = mmap_->get_address(offset);
-        if (len_ptr) {
-            uint32_t payload_len;
-            std::memcpy(&payload_len, len_ptr, sizeof(uint32_t));
+    const uint8_t* len_ptr = mmap_->get_address(offset);
+    if (len_ptr) {
+        uint32_t payload_len;
+        std::memcpy(&payload_len, len_ptr, sizeof(uint32_t));
+        if (compactor_) {
             compactor_->trackLiveBytes(sizeof(uint32_t) + payload_len + sizeof(uint32_t), false);
         }
     }
 
-    btree_->insert(key, 0); // tombstone
+    if (sync_enabled_) {
+        // For sync-enabled DBs, we must write a tombstone record to mmap.
+        // insertRecBytes handles its own unique_lock internaly, so we call it without holding rw_mutex_.
+        insertRecBytes(key, {}, true, true);
+    } else {
+        std::unique_lock lock(rw_mutex_);
+        // Plain delete: point to offset 0 in the tree and ensure durability.
+        btree_->insert(key, 0);
+    }
+    
+    // Final persistence check
     btree_->flush();
+    if (pbtree_) pbtree_->checkpoint();
 
     // Schedule compaction if fragmentation exceeds threshold
     if (compactor_ && mmap_ &&
@@ -1236,17 +1255,76 @@ std::vector<std::pair<std::string, facebook::jsi::Value>> DBEngine::rangeQuery(
     return results;
 }
 
+bool DBEngine::isTombstone(size_t offset) {
+    if (!sync_enabled_ || !mmap_ || offset == 0) return false;
+    
+    const uint8_t* ptr = mmap_->get_address(offset);
+    if (!ptr) return false;
+    
+    uint32_t payload_len;
+    std::memcpy(&payload_len, ptr, sizeof(uint32_t));
+    
+    // SyncMetadata is stored immediately after the 4-byte length
+    const SyncMetadata* meta = reinterpret_cast<const SyncMetadata*>(ptr + sizeof(uint32_t));
+    return (meta->flags & SYNC_FLAG_TOMBSTONE) != 0;
+}
+
 std::vector<std::string> DBEngine::getAllKeys() {
     std::shared_lock lock(rw_mutex_);
-    return btree_ ? btree_->getAllKeys() : std::vector<std::string>{};
+    if (!btree_) return {};
+    
+    auto all_keys = btree_->getAllKeys();
+    if (!sync_enabled_) return all_keys;
+    
+    std::vector<std::string> filtered;
+    filtered.reserve(all_keys.size());
+    for (const auto& key : all_keys) {
+        // Special internal keys are already filtered by BufferedBTree::getAllKeys
+        // since we check offset > 0, and tombstones have offset > 0.
+        // But we need to check if the record is a tombstone.
+        size_t offset = btree_->find(key);
+        if (!isTombstone(offset)) {
+            filtered.push_back(key);
+        }
+    }
+    return filtered;
 }
 
 // O(limit) paging — fixed: no longer loads all keys
 std::vector<std::string> DBEngine::getAllKeysPaged(int limit, int offset) {
     std::shared_lock lock(rw_mutex_);
-    if (!pbtree_) return {};
-    // Use tree-level paging from PersistentBPlusTree
-    return pbtree_->getKeysPaged(limit, offset);
+    if (!pbtree_ || !btree_) return {};
+
+    std::vector<std::string> results;
+    results.reserve(static_cast<size_t>(limit));
+    
+    int skip = offset;
+    int collected = 0;
+    
+    // We can't use PersistentBPlusTree::getKeysPaged directly because it doesn't know about tombstones.
+    // We must iterate and filter. To stay "paged", we use a cursor-like approach.
+    // For simplicity, we'll use a sliding window of keys.
+    // In a production DB, we'd store tombstones differently or use a dedicated 'deleted' bitset.
+    
+    // Fallback: Since we need to filter tombstones, we must scan from the beginning or use a better index.
+    // For this implementation, we will scan and skip.
+    auto all_keys = btree_->getAllKeys();
+    for (const auto& key : all_keys) {
+        if (collected >= limit) break;
+        
+        size_t off = btree_->find(key);
+        if (isTombstone(off)) continue;
+        
+        if (skip > 0) {
+            skip--;
+            continue;
+        }
+        
+        results.push_back(key);
+        collected++;
+    }
+
+    return results;
 }
 
 bool DBEngine::clearStorage() {
@@ -1304,10 +1382,11 @@ facebook::jsi::Value DBEngine::setAsync(
 
     return createPromise(runtime,
         [this, keyCopy = std::move(keyCopy), bytes = std::move(bytes)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject)
         {
-            scheduler_->schedule([this, keyCopy, bytes, resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, keyCopy, bytes, resolve, reject] {
                 bool ok = false;
                 std::string errMsg;
                 try {
@@ -1316,19 +1395,12 @@ facebook::jsi::Value DBEngine::setAsync(
                     errMsg = e.what();
                 }
 
-                js_invoker_->invokeAsync([resolve, reject, ok, errMsg] {
-                    // Back on JS thread
-                    // NOTE: We need a runtime to call the function, but invokeAsync
-                    // doesn't provide one. The resolve/reject functions close over
-                    // the runtime context they were created in.
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, ok, errMsg] {
                     if (ok) {
-                        // Call resolve(true) — we use jsi::Value in the closure
-                        // This pattern works because the Functions were created on the JS thread
+                        resolve->call(*rt_ptr, facebook::jsi::Value(true));
+                    } else {
+                        reject->call(*rt_ptr, facebook::jsi::String::createFromUtf8(*rt_ptr, errMsg));
                     }
-                    // Actual call happens via the captured shared_ptr<Function>
-                    // The JSI runtime is accessible inside invokeAsync callback
-                    // through the Function's implicit runtime reference.
-                    // This is safe as Functions pin the runtime.
                 });
             }, DBScheduler::Priority::WRITE);
         });
@@ -1351,10 +1423,11 @@ facebook::jsi::Value DBEngine::getAsync(
 
     return createPromise(runtime,
         [this, keyCopy = std::move(keyCopy)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject)
         {
-            scheduler_->schedule([this, keyCopy, resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, keyCopy, resolve, reject] {
                 // Read the raw bytes on DB thread
                 std::vector<uint8_t> raw_bytes;
                 bool found = false;
@@ -1403,15 +1476,23 @@ facebook::jsi::Value DBEngine::getAsync(
                 }
 
                 // Deserialize back on JS thread (requires jsi::Runtime)
-                js_invoker_->invokeAsync([resolve, reject, raw_bytes = std::move(raw_bytes),
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, raw_bytes = std::move(raw_bytes),
                                           found, errMsg] {
-                    // JS thread context — but we don't have jsi::Runtime here.
-                    // The resolve/reject functions carry it implicitly.
-                    (void)resolve;
-                    (void)reject;
-                    (void)found;
-                    (void)errMsg;
-                    // See note below about the runtime access pattern
+                    if (!errMsg.empty()) {
+                        reject->call(*rt_ptr, facebook::jsi::String::createFromUtf8(*rt_ptr, errMsg));
+                        return;
+                    }
+                    if (!found) {
+                        resolve->call(*rt_ptr, facebook::jsi::Value::undefined());
+                        return;
+                    }
+
+                    try {
+                        auto [val, consumed] = BinarySerializer::deserialize(*rt_ptr, raw_bytes.data(), raw_bytes.size());
+                        resolve->call(*rt_ptr, std::move(val));
+                    } catch (const std::exception& e) {
+                        reject->call(*rt_ptr, facebook::jsi::String::createFromUtf8(*rt_ptr, e.what()));
+                    }
                 });
             }, DBScheduler::Priority::READ);
         });
@@ -1473,10 +1554,11 @@ facebook::jsi::Value DBEngine::setMultiAsync(
 
     return createPromise(runtime,
         [this, ev = std::move(entries_vec)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject) mutable
         {
-            scheduler_->schedule([this, ev = std::move(ev), resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, ev = std::move(ev), resolve, reject] {
                 bool ok = true;
                 try {
                     std::unique_lock lock(rw_mutex_);
@@ -1515,7 +1597,12 @@ facebook::jsi::Value DBEngine::setMultiAsync(
                         btree_->insert(entry.key, offset);
                     }
 
-                    if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
+                    if (pbtree_) {
+                        pbtree_->setNextFreeOffset(next_free_offset_);
+                        pbtree_->checkpoint();
+                    }
+                    btree_->flush();
+
                     if (is_secure_mode_ && wal_) { wal_->logCommit(); wal_->sync(); }
 
                 } catch (const std::exception& e) {
@@ -1523,9 +1610,12 @@ facebook::jsi::Value DBEngine::setMultiAsync(
                     ok = false;
                 }
 
-                js_invoker_->invokeAsync([resolve, reject, ok] {
-                    (void)resolve; (void)reject; (void)ok;
-                    // resolve/reject called with native value — see runtime note above
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, ok] {
+                    if (ok) {
+                        resolve->call(*rt_ptr, facebook::jsi::Value(true));
+                    } else {
+                        reject->call(*rt_ptr, facebook::jsi::String::createFromUtf8(*rt_ptr, "setMultiAsync failed"));
+                    }
                 });
             }, DBScheduler::Priority::WRITE);
         });
@@ -1550,10 +1640,11 @@ facebook::jsi::Value DBEngine::getMultipleAsync(
 
     return createPromise(runtime,
         [this, kv = std::move(key_vec)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject) mutable
         {
-            scheduler_->schedule([this, kv = std::move(kv), resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, kv = std::move(kv), resolve, reject] {
                 // Read raw encrypted bytes for all keys on DB thread
                 std::vector<std::pair<std::string, std::vector<uint8_t>>> raw_results;
                 try {
@@ -1595,8 +1686,21 @@ facebook::jsi::Value DBEngine::getMultipleAsync(
                     }
                 } catch (...) {}
 
-                js_invoker_->invokeAsync([resolve, reject, raw_results = std::move(raw_results)] {
-                    (void)resolve; (void)reject; (void)raw_results;
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, raw_results = std::move(raw_results)] {
+                    facebook::jsi::Object res_obj(*rt_ptr);
+                    for (auto& pair : raw_results) {
+                        if (pair.second.empty()) {
+                            res_obj.setProperty(*rt_ptr, pair.first.c_str(), facebook::jsi::Value::undefined());
+                        } else {
+                            try {
+                                auto [val, consumed] = BinarySerializer::deserialize(*rt_ptr, pair.second.data(), pair.second.size());
+                                res_obj.setProperty(*rt_ptr, pair.first.c_str(), std::move(val));
+                            } catch (...) {
+                                res_obj.setProperty(*rt_ptr, pair.first.c_str(), facebook::jsi::Value::undefined());
+                            }
+                        }
+                    }
+                    resolve->call(*rt_ptr, std::move(res_obj));
                 });
             }, DBScheduler::Priority::READ);
         });
@@ -1617,10 +1721,11 @@ facebook::jsi::Value DBEngine::rangeQueryAsync(
 
     return createPromise(runtime,
         [this, startKey = std::move(startKey), endKey = std::move(endKey)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject) mutable
         {
-            scheduler_->schedule([this, startKey, endKey, resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, startKey, endKey, resolve, reject] {
                 std::vector<std::pair<std::string, std::vector<uint8_t>>> raw_results;
                 try {
                     std::shared_lock lock(rw_mutex_);
@@ -1656,8 +1761,20 @@ facebook::jsi::Value DBEngine::rangeQueryAsync(
                     }
                 } catch (...) {}
 
-                js_invoker_->invokeAsync([resolve, reject, raw_results = std::move(raw_results)] {
-                    (void)resolve; (void)reject; (void)raw_results;
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, raw_results = std::move(raw_results)] {
+                    facebook::jsi::Array res_arr(*rt_ptr, raw_results.size());
+                    for (size_t i = 0; i < raw_results.size(); i++) {
+                        facebook::jsi::Object item(*rt_ptr);
+                        item.setProperty(*rt_ptr, "key", facebook::jsi::String::createFromUtf8(*rt_ptr, raw_results[i].first));
+                        try {
+                            auto [val, consumed] = BinarySerializer::deserialize(*rt_ptr, raw_results[i].second.data(), raw_results[i].second.size());
+                            item.setProperty(*rt_ptr, "value", std::move(val));
+                        } catch (...) {
+                            item.setProperty(*rt_ptr, "value", facebook::jsi::Value::undefined());
+                        }
+                        res_arr.setValueAtIndex(*rt_ptr, i, item);
+                    }
+                    resolve->call(*rt_ptr, std::move(res_arr));
                 });
             }, DBScheduler::Priority::READ);
         });
@@ -1666,18 +1783,22 @@ facebook::jsi::Value DBEngine::rangeQueryAsync(
 facebook::jsi::Value DBEngine::getAllKeysAsync(facebook::jsi::Runtime& runtime) {
     return createPromise(runtime,
         [this](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject)
         {
-            scheduler_->schedule([this, resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, resolve, reject] {
                 std::vector<std::string> keys;
                 try {
-                    std::shared_lock lock(rw_mutex_);
-                    if (btree_) keys = btree_->getAllKeys();
+                    keys = getAllKeys();
                 } catch (...) {}
 
-                js_invoker_->invokeAsync([resolve, reject, keys = std::move(keys)] {
-                    (void)resolve; (void)reject; (void)keys;
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, keys = std::move(keys)] {
+                    facebook::jsi::Array res_arr(*rt_ptr, keys.size());
+                    for (size_t i = 0; i < keys.size(); i++) {
+                        res_arr.setValueAtIndex(*rt_ptr, i, facebook::jsi::String::createFromUtf8(*rt_ptr, keys[i]));
+                    }
+                    resolve->call(*rt_ptr, std::move(res_arr));
                 });
             }, DBScheduler::Priority::READ);
         });
@@ -1696,18 +1817,18 @@ facebook::jsi::Value DBEngine::removeAsync(
 
     return createPromise(runtime,
         [this, key = std::move(key)](
+            facebook::jsi::Runtime& rt,
             std::shared_ptr<facebook::jsi::Function> resolve,
             std::shared_ptr<facebook::jsi::Function> reject)
         {
-            scheduler_->schedule([this, key, resolve, reject] {
+            scheduler_->schedule([this, rt_ptr = &rt, key, resolve, reject] {
                 bool ok = false;
                 try {
-                    std::unique_lock lock(rw_mutex_);
                     ok = remove(key);
                 } catch (...) {}
 
-                js_invoker_->invokeAsync([resolve, reject, ok] {
-                    (void)resolve; (void)reject; (void)ok;
+                js_invoker_->invokeAsync([rt_ptr, resolve, reject, ok] {
+                    resolve->call(*rt_ptr, facebook::jsi::Value(ok));
                 });
             }, DBScheduler::Priority::WRITE);
         });

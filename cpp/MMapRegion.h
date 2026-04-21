@@ -26,9 +26,13 @@ public:
     std::string read(size_t offset, size_t length);
     const uint8_t* get_address(size_t offset) const;
 
+    // Expand the mmap if the current size is too small
+    void ensure_capacity(size_t required_size);
+
     // Property accessors
     std::string getPath() const { return path_; }
     size_t getSize() const { return size_; }
+    void* getAddress() const { return base_addr_; }
 
 private:
     void* base_addr_;

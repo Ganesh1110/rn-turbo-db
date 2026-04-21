@@ -1,6 +1,9 @@
 import { TurboModuleRegistry, NativeModules } from 'react-native';
 import type { Spec } from './NativeTurboDB';
 import type { SyncChanges, SyncRecord, SyncAck } from './SyncManager';
+import { TurboDBError, TurboDBErrorCode } from './TurboDBError';
+
+export { TurboDBError, TurboDBErrorCode };
 
 const NativeTurboDB =
   TurboModuleRegistry.get<Spec>('TurboDB') || (NativeModules as any).TurboDB;

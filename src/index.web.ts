@@ -1,3 +1,5 @@
+import { TurboDBError, TurboDBErrorCode } from './TurboDBError';
+
 export interface RangeQueryResult {
   key: string;
   value: any;
@@ -5,13 +7,22 @@ export interface RangeQueryResult {
 
 const IS_SERVER = typeof window === 'undefined';
 
+export interface DBOptions {
+  syncEnabled?: boolean;
+}
+
+export interface SetOptions {
+  debounce?: boolean;
+}
+
 /**
  * Web Implementation of TurboDB.
  * Features:
  * - SSR Friendly (No-op on server)
  * - IndexedDB Backend for persistence
- * - In-memory cache for synchronous reads (SEO/SSR optimization)
- * - Debounced writes to prevent blocking interaction (Core Web Vitals)
+ * - In-memory cache for synchronous reads
+ * - Configurable immediate vs debounced writes
+ * - Full API parity with React Native implementation
  */
 export class TurboDB {
   static install(): boolean {
@@ -22,6 +33,19 @@ export class TurboDB {
     return '/';
   }
 
+  /**
+   * ✅ Preferred factory — async, ensures IndexedDB is ready.
+   */
+  static async create(
+    path: string,
+    size: number = 10 * 1024 * 1024,
+    options: DBOptions = {}
+  ): Promise<TurboDB> {
+    const instance = new TurboDB(path, size, options);
+    await instance.ensureInitialized();
+    return instance;
+  }
+
   private isInitialized = false;
   private storage: Map<string, any> = new Map();
   private db: IDBDatabase | null = null;
@@ -30,13 +54,13 @@ export class TurboDB {
 
   constructor(
     private path: string,
-    private size: number = 10 * 1024 * 1024
+    _size: number = 10 * 1024 * 1024,
+    _options: DBOptions = {}
   ) {
     if (IS_SERVER) {
       console.log('TurboDB (Web): SSR Mode');
     } else {
-      console.log(`TurboDB (Web): Created with size limit ${this.size}`);
-      // Lazy-trigger initialization
+      // Lazy-trigger initialization if not created via factory
       this.initPromise = this.ensureInitialized();
     }
   }
@@ -46,14 +70,16 @@ export class TurboDB {
     if (this.isInitialized) return;
     if (this.initPromise) return this.initPromise;
 
-    this.initPromise = new Promise((resolve) => {
+    this.initPromise = new Promise((resolve, reject) => {
       const dbName = `turbodb_${this.path.replace(/\//g, '_')}`;
       const request = indexedDB.open(dbName, 1);
 
-      request.onerror = (event) => {
-        console.error('TurboDB (Web): IndexedDB error', event);
-        this.isInitialized = true; // Mark as initialized even on failure to avoid infinite loops
-        resolve();
+      request.onerror = () => {
+        const error = new TurboDBError(
+          TurboDBErrorCode.IO_FAIL,
+          'Failed to open IndexedDB'
+        );
+        reject(error);
       };
 
       request.onupgradeneeded = (event: any) => {
@@ -65,9 +91,13 @@ export class TurboDB {
 
       request.onsuccess = async (event: any) => {
         this.db = event.target.result;
-        await this.loadFromIndexedDB();
-        this.isInitialized = true;
-        resolve();
+        try {
+          await this.loadFromIndexedDB();
+          this.isInitialized = true;
+          resolve();
+        } catch (e: any) {
+          reject(e);
+        }
       };
     });
 
@@ -77,25 +107,33 @@ export class TurboDB {
   private async loadFromIndexedDB(): Promise<void> {
     if (!this.db) return;
 
-    return new Promise((resolve) => {
-      const transaction = this.db!.transaction(['kv'], 'readonly');
-      const store = transaction.objectStore('kv');
-      const request = store.openCursor();
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.db!.transaction(['kv'], 'readonly');
+        const store = transaction.objectStore('kv');
+        const request = store.openCursor();
 
-      request.onsuccess = (event: any) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          this.storage.set(cursor.key, cursor.value);
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
+        request.onsuccess = (event: any) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            this.storage.set(cursor.key, cursor.value);
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
 
-      request.onerror = () => {
-        console.warn('TurboDB (Web): Failed to load from IndexedDB');
-        resolve();
-      };
+        request.onerror = () => {
+          reject(
+            new TurboDBError(
+              TurboDBErrorCode.IO_FAIL,
+              'Failed to read from IndexedDB'
+            )
+          );
+        };
+      } catch (e: any) {
+        reject(new TurboDBError(TurboDBErrorCode.IO_FAIL, e.message));
+      }
     });
   }
 
@@ -106,37 +144,46 @@ export class TurboDB {
   }
 
   private async persistToIndexedDB(): Promise<void> {
-    if (!this.db) return;
+    if (!this.db || IS_SERVER) return;
 
-    return new Promise((resolve) => {
-      const transaction = this.db!.transaction(['kv'], 'readwrite');
-      const store = transaction.objectStore('kv');
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.db!.transaction(['kv'], 'readwrite');
+        const store = transaction.objectStore('kv');
 
-      store.clear();
-      for (const [key, value] of this.storage.entries()) {
-        store.put(value, key);
+        store.clear();
+        for (const [key, value] of this.storage.entries()) {
+          store.put(value, key);
+        }
+
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = (event: any) => {
+          const error = event.target.error;
+          if (error && error.name === 'QuotaExceededError') {
+            reject(
+              new TurboDBError(
+                TurboDBErrorCode.QUOTA_EXCEEDED,
+                'Storage quota exceeded'
+              )
+            );
+          } else {
+            reject(
+              new TurboDBError(TurboDBErrorCode.IO_FAIL, 'Persistence failed')
+            );
+          }
+        };
+      } catch (e: any) {
+        reject(new TurboDBError(TurboDBErrorCode.IO_FAIL, e.message));
       }
-
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => {
-        console.warn('TurboDB (Web): Persistence failed');
-        resolve();
-      };
     });
   }
 
-  // --- Synchronous API (SSR/Hydration Optimization) ---
+  // --- Synchronous API ---
 
-  /**
-   * Synchronously check if a key exists (uses in-memory cache)
-   */
   has(key: string): boolean {
     return this.storage.has(key);
   }
 
-  /**
-   * Synchronously get a value (uses in-memory cache)
-   */
   get<T = any>(key: string): T | undefined {
     return this.storage.get(key);
   }
@@ -144,16 +191,18 @@ export class TurboDB {
   /**
    * Synchronously set a value (updates cache immediately, persists in background)
    */
-  set(key: string, value: any): boolean {
+  set(key: string, value: any, options: SetOptions = {}): boolean {
     if (IS_SERVER) return false;
     this.storage.set(key, value);
-    this.scheduleSave();
+
+    if (options.debounce) {
+      this.scheduleSave();
+    } else {
+      this.persistToIndexedDB().catch((e) => console.error(e));
+    }
     return true;
   }
 
-  /**
-   * Synchronously remove a value
-   */
   remove(key: string): boolean {
     if (IS_SERVER) return false;
     const res = this.storage.delete(key);
@@ -161,9 +210,6 @@ export class TurboDB {
     return res;
   }
 
-  /**
-   * Synchronously clear all values
-   */
   clear(): boolean {
     if (IS_SERVER) return false;
     this.storage.clear();
@@ -180,29 +226,46 @@ export class TurboDB {
     return keys.slice(offset, offset + limit);
   }
 
-  // --- Asynchronous API ---
+  // --- Asynchronous API (Parity with Native) ---
 
-  async setAsync(key: string, value: any): Promise<boolean> {
+  async setAsync(
+    key: string,
+    value: any,
+    options: SetOptions = {}
+  ): Promise<boolean> {
     await this.ensureInitialized();
-    return this.set(key, value);
+    this.storage.set(key, value);
+    if (options.debounce) {
+      this.scheduleSave();
+      return true;
+    }
+    await this.persistToIndexedDB();
+    return true;
   }
 
   async getAsync<T = any>(key: string): Promise<T | undefined> {
     await this.ensureInitialized();
-    return this.get<T>(key);
+    return this.storage.get(key);
   }
 
-  async setMulti(entries: Record<string, any>): Promise<boolean> {
+  async setMultiAsync(
+    entries: Record<string, any>,
+    options: SetOptions = {}
+  ): Promise<boolean> {
     if (IS_SERVER) return false;
     await this.ensureInitialized();
     for (const [key, value] of Object.entries(entries)) {
       this.storage.set(key, value);
     }
-    this.scheduleSave();
+    if (options.debounce) {
+      this.scheduleSave();
+      return true;
+    }
+    await this.persistToIndexedDB();
     return true;
   }
 
-  async getMultiple(keys: string[]): Promise<Record<string, any>> {
+  async getMultipleAsync(keys: string[]): Promise<Record<string, any>> {
     await this.ensureInitialized();
     const result: Record<string, any> = {};
     for (const key of keys) {
@@ -211,11 +274,7 @@ export class TurboDB {
     return result;
   }
 
-  async deleteAll(): Promise<boolean> {
-    return this.clear();
-  }
-
-  async rangeQuery(
+  async rangeQueryAsync(
     startKey: string,
     endKey: string
   ): Promise<RangeQueryResult[]> {
@@ -232,7 +291,21 @@ export class TurboDB {
 
   async getAllKeysAsync(): Promise<string[]> {
     await this.ensureInitialized();
-    return this.getAllKeys();
+    return Array.from(this.storage.keys());
+  }
+
+  async removeAsync(key: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const res = this.storage.delete(key);
+    await this.persistToIndexedDB();
+    return res;
+  }
+
+  async deleteAllAsync(): Promise<boolean> {
+    await this.ensureInitialized();
+    this.storage.clear();
+    await this.persistToIndexedDB();
+    return true;
   }
 
   async flush(): Promise<void> {
@@ -245,9 +318,39 @@ export class TurboDB {
     await this.persistToIndexedDB();
   }
 
-  // Legacy method aliases
+  // --- Sync APIs (Stubs for parity) ---
+  async getLocalChangesAsync(_lastSyncClock: number): Promise<any> {
+    return null;
+  }
+  async applyRemoteChangesAsync(_changes: any[]): Promise<boolean> {
+    return true;
+  }
+  async markPushedAsync(_acks: any[]): Promise<boolean> {
+    return true;
+  }
+
+  // --- Legacy Compatibility ---
   async del(key: string): Promise<boolean> {
-    return this.remove(key);
+    return this.removeAsync(key);
+  }
+
+  async deleteAll(): Promise<boolean> {
+    return this.deleteAllAsync();
+  }
+
+  async setMulti(entries: Record<string, any>): Promise<boolean> {
+    return this.setMultiAsync(entries);
+  }
+
+  async getMultiple(keys: string[]): Promise<Record<string, any>> {
+    return this.getMultipleAsync(keys);
+  }
+
+  async rangeQuery(
+    startKey: string,
+    endKey: string
+  ): Promise<RangeQueryResult[]> {
+    return this.rangeQueryAsync(startKey, endKey);
   }
 
   benchmark(): number {

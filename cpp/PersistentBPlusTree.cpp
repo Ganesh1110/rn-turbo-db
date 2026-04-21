@@ -126,6 +126,13 @@ uint64_t PersistentBPlusTree::allocate_node(bool is_leaf) {
     } else {
         // Nodes are stored at 4096-byte aligned offsets starting after the header page
         offset = 4096 + (static_cast<uint64_t>(header_.node_count) * sizeof(BTreeNode));
+        
+        // Safety check: Don't grow node area into the data record area (starts at 1MB)
+        if (offset + sizeof(BTreeNode) >= 1024 * 1024) {
+            LOGE("PersistentBPlusTree: Out of index space! B-Tree region exceeded 1MB.");
+            throw std::runtime_error("Database index area full (Max 1MB). Reduce data volume or increase index boundary.");
+        }
+        
         header_.node_count++;
     }
 
