@@ -186,7 +186,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(runtime, name, 1,
             [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
                    const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
-                // findRec acquires its own shared_lock internally
+                std::shared_lock lock(rw_mutex_);
                 return findRec(rt, args[0].getString(rt).utf8(rt));
             });
     }
@@ -244,6 +244,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(runtime, name, 0,
             [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
                    const facebook::jsi::Value*, size_t) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
                 auto keys = getAllKeys();
                 facebook::jsi::Array result(rt, keys.size());
                 for (size_t i = 0; i < keys.size(); i++) {
@@ -257,6 +258,7 @@ facebook::jsi::Value DBEngine::get(
         return facebook::jsi::Function::createFromHostFunction(runtime, name, 2,
             [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
                    const facebook::jsi::Value* args, size_t cnt) -> facebook::jsi::Value {
+                std::shared_lock lock(rw_mutex_);
                 int limit  = cnt > 0 ? (int)args[0].asNumber() : 100;
                 int offset = cnt > 1 ? (int)args[1].asNumber() : 0;
                 auto keys = getAllKeysPaged(limit, offset);
@@ -713,7 +715,6 @@ std::string DBEngine::getDatabasePath() const { return mmap_ ? mmap_->getPath() 
 std::string DBEngine::getWALPath() const      { return wal_  ? wal_->getWALPath() : ""; }
 
 void DBEngine::setSecureMode(bool enable) {
-    std::unique_lock lock(rw_mutex_);
     is_secure_mode_ = enable;
     if (wal_) {
         if (enable) wal_->openWAL();
@@ -891,7 +892,6 @@ bool DBEngine::insertRecBytes(
             LOGI("insertRecBytes: empty payload (tombstone)");
         }
 
-        std::unique_lock lock(rw_mutex_);
         size_t offset  = next_free_offset_;
         uint32_t len32 = static_cast<uint32_t>(payload_len);
         if (sync_enabled_) len32 += sizeof(SyncMetadata);
@@ -983,7 +983,6 @@ facebook::jsi::Value DBEngine::findRec(
     facebook::jsi::Runtime& runtime,
     const std::string& key)
 {
-    std::shared_lock lock(rw_mutex_);
     if (!btree_ || !mmap_) return facebook::jsi::Value::undefined();
 
     try {
@@ -1168,7 +1167,6 @@ bool DBEngine::remove(const std::string& key) {
     
     size_t offset = 0;
     {
-        std::shared_lock lock(rw_mutex_);
         offset = btree_->find(key);
     }
     LOGI("remove: found offset=%zu for key=%s", offset, key.c_str());
@@ -1193,19 +1191,11 @@ bool DBEngine::remove(const std::string& key) {
         // and update the B-tree to point to the tombstone offset.
         LOGI("remove: sync_enabled=true, writing tombstone for key=%s", key.c_str());
         size_t tombstone_offset = 0;
-        bool insert_ok = insertRecBytes(key, {}, true, true, nullptr, &tombstone_offset);
-        LOGI("remove: insertRecBytes returned ok=%d, tombstone_offset=%zu", insert_ok, tombstone_offset);
-        
-        // Update B-tree to point to tombstone so find() returns it
-        if (tombstone_offset > 0) {
-            std::unique_lock lock(rw_mutex_);
-            btree_->insert(key, tombstone_offset);
-            LOGI("remove: updated btree with tombstone offset");
-        } else {
-            LOGE("remove: FAILED to get tombstone offset!");
-        }
+        bool insert_ok =
+            insertRecBytes(key, {}, true, true, nullptr, &tombstone_offset);
+        LOGI("remove: insertRecBytes returned ok=%d, tombstone_offset=%zu",
+             insert_ok, tombstone_offset);
     } else {
-        std::unique_lock lock(rw_mutex_);
         // Plain delete: point to offset 0 in the tree and ensure durability.
         btree_->insert(key, 0);
     }
@@ -1312,7 +1302,6 @@ bool DBEngine::isTombstone(size_t offset) {
 }
 
 std::vector<std::string> DBEngine::getAllKeys() {
-    std::shared_lock lock(rw_mutex_);
     if (!btree_) return {};
     
     auto all_keys = btree_->getAllKeys();
@@ -1334,7 +1323,6 @@ std::vector<std::string> DBEngine::getAllKeys() {
 
 // O(limit) paging — fixed: no longer loads all keys
 std::vector<std::string> DBEngine::getAllKeysPaged(int limit, int offset) {
-    std::shared_lock lock(rw_mutex_);
     if (!pbtree_ || !btree_) return {};
 
     std::vector<std::string> results;
@@ -1429,6 +1417,7 @@ facebook::jsi::Value DBEngine::setAsync(
             std::shared_ptr<facebook::jsi::Function> reject)
         {
             scheduler_->schedule([this, rt_ptr = &rt, keyCopy, bytes, resolve, reject] {
+                std::unique_lock lock(rw_mutex_);
                 bool ok = false;
                 std::string errMsg;
                 try {
@@ -1830,6 +1819,7 @@ facebook::jsi::Value DBEngine::getAllKeysAsync(facebook::jsi::Runtime& runtime) 
             std::shared_ptr<facebook::jsi::Function> reject)
         {
             scheduler_->schedule([this, rt_ptr = &rt, resolve, reject] {
+                std::shared_lock lock(rw_mutex_);
                 std::vector<std::string> keys;
                 try {
                     keys = getAllKeys();
@@ -1864,6 +1854,7 @@ facebook::jsi::Value DBEngine::removeAsync(
             std::shared_ptr<facebook::jsi::Function> reject)
         {
             scheduler_->schedule([this, rt_ptr = &rt, key, resolve, reject] {
+                std::unique_lock lock(rw_mutex_);
                 bool ok = false;
                 try {
                     ok = remove(key);
