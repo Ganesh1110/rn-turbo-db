@@ -3,6 +3,10 @@
 #include <string>
 #include <vector>
 
+#ifdef __APPLE__
+#include <Security/Security.h>
+#endif
+
 namespace turbo_db {
 
 class KeyManagerIOS {
@@ -19,9 +23,11 @@ public:
     static bool deleteSecureItem(const std::string& key);
 
 private:
+#ifdef __APPLE__
     static SecKeyRef getSecureEnclaveKey();
     static std::vector<uint8_t> wrapMasterKey(const std::vector<uint8_t>& masterKey, SecKeyRef publicKey);
     static std::vector<uint8_t> unwrapMasterKey(const std::vector<uint8_t>& wrappedKey, SecKeyRef privateKey);
+#endif
 };
 
 }

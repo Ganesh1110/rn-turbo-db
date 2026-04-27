@@ -25,19 +25,19 @@ namespace facebook::react {
 TurboDBImpl::TurboDBImpl(std::shared_ptr<CallInvoker> jsInvoker)
     : NativeTurboDBCxxSpec<TurboDBImpl>(std::move(jsInvoker)) {}
 
-void TurboDBImpl::install(jsi::Runtime& rt) {
+bool TurboDBImpl::install(jsi::Runtime& rt) {
     TURBODB_LOG("install: starting, runtime=%p", &rt);
     
     if (&rt == nullptr) {
         TURBODB_LOG("install: ERROR - runtime is null!");
         throw jsi::JSError(rt, "[TurboDB] JSI runtime is null - React Native JSI not initialized");
-        return;
+        return false;
     }
     
     auto js_invoker = this->jsInvoker_;
     
 #ifdef __APPLE__
-    @try {
+    try {
         TURBODB_LOG("install: getting documents directory");
         std::string docsDir = getDocumentsDirectory(rt);
         TURBODB_LOG("install: docsDir=%s", docsDir.c_str());
@@ -55,19 +55,22 @@ void TurboDBImpl::install(jsi::Runtime& rt) {
         // Verify installation
         if (rt.global().hasProperty(rt, "NativeDB")) {
             TURBODB_LOG("install: SUCCESS - NativeDB is now available on global");
+            return true;
         } else {
             TURBODB_LOG("install: WARNING - NativeDB not found on global after install");
+            return true;
         }
-    } @catch (NSException *exception) {
+    } catch (NSException *exception) {
         TURBODB_LOG("install: NSException - %@", exception.reason);
         throw jsi::JSError(rt, [NSString stringWithFormat:@"[TurboDB] install failed: %@", exception.reason]);
-    } @catch (std::exception& e) {
+    } catch (const std::exception& e) {
         TURBODB_LOG("install: std::exception - %s", e.what());
         throw jsi::JSError(rt, [NSString stringWithFormat:@"[TurboDB] install failed: %s", e.what()]);
     }
 #else
     TURBODB_LOG("install: not Apple platform - skipping JSI install");
 #endif
+    return true;
 }
 
 std::string TurboDBImpl::getDocumentsDirectory(jsi::Runtime& rt) {

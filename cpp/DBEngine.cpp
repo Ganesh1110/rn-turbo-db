@@ -7,6 +7,7 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <unistd.h>
 
 #ifdef __ANDROID__
 #include <jni.h>
@@ -974,6 +975,21 @@ facebook::jsi::Value DBEngine::createPromise(
             return facebook::jsi::Value::undefined();
         });
     return promiseConstructor.callAsConstructor(runtime, callback);
+}
+
+static std::shared_ptr<DBEngine> g_engine;
+
+void installDBEngine(
+    facebook::jsi::Runtime& runtime,
+    std::shared_ptr<facebook::react::CallInvoker> js_invoker,
+    std::unique_ptr<SecureCryptoContext> crypto) {
+    auto engine = std::make_shared<DBEngine>(js_invoker, std::move(crypto));
+    g_engine = engine;
+    runtime.global().setProperty(runtime, "NativeDB", facebook::jsi::Object::createFromHostObject(runtime, engine));
+}
+
+std::shared_ptr<DBEngine> getDBEngine() {
+    return g_engine;
 }
 
 } // namespace turbo_db

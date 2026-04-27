@@ -15,7 +15,7 @@ class JSI_EXPORT TurboDBImpl : public NativeTurboDBCxxSpec<TurboDBImpl> {
 public:
   TurboDBImpl(std::shared_ptr<CallInvoker> jsInvoker);
 
-  void install(jsi::Runtime& rt);
+  bool install(jsi::Runtime& rt);
   std::string getDocumentsDirectory(jsi::Runtime& rt);
   bool isInitialized(jsi::Runtime& rt);
   std::string getVersion(jsi::Runtime& rt);
