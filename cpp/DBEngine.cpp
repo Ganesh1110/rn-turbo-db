@@ -709,7 +709,7 @@ facebook::jsi::Value DBEngine::setAsync(facebook::jsi::Runtime& rt, const facebo
     BinarySerializer::serialize(rt, obj.getProperty(rt, "value"), arena_);
     std::vector<uint8_t> bytes(arena_.data(), arena_.data() + arena_.size());
 
-    return createPromise(rt, [this, key, bytes = std::move(bytes)](auto& rt2, auto resolve, auto reject) mutable {
+    return createPromise(rt, [this, key, bytes](auto& rt2, auto resolve, auto reject) mutable {
         scheduler_->schedule([this, key, bytes = std::move(bytes), resolve, reject]() mutable {
             bool ok = false;
             try {
@@ -738,16 +738,15 @@ facebook::jsi::Value DBEngine::getAsync(facebook::jsi::Runtime& rt, const facebo
         });
     }
     std::string key = keyVal.asString(rt).utf8(rt);
-    // Read is fast and safe to execute inline on JS thread (mmap reads are lock-free reads)
-    auto result = findRec(rt, key);
-    return createPromise(rt, [result = std::move(result)](auto& rt2, auto resolve, auto reject) mutable {
+    return createPromise(rt, [this, key](auto& rt2, auto resolve, auto reject) {
+        auto result = findRec(rt2, key);
         resolve->call(rt2, std::move(result));
     });
 }
 
 facebook::jsi::Value DBEngine::getAllKeysAsync(facebook::jsi::Runtime& rt) {
-    auto keys = getAllKeys();
-    return createPromise(rt, [keys = std::move(keys)](auto& rt2, auto resolve, auto reject) mutable {
+    return createPromise(rt, [this](auto& rt2, auto resolve, auto reject) {
+        auto keys = getAllKeys();
         facebook::jsi::Array arr(rt2, keys.size());
         for (size_t i = 0; i < keys.size(); i++) {
             arr.setValueAtIndex(rt2, i, facebook::jsi::String::createFromUtf8(rt2, keys[i]));
@@ -809,12 +808,16 @@ facebook::jsi::Value DBEngine::getMultipleAsync(facebook::jsi::Runtime& rt, cons
     }
     auto arr = keys.asObject(rt).asArray(rt);
     size_t len = arr.size(rt);
-    facebook::jsi::Object result(rt);
+    std::vector<std::string> cppKeys;
+    cppKeys.reserve(len);
     for (size_t i = 0; i < len; i++) {
-        auto key = arr.getValueAtIndex(rt, i).asString(rt).utf8(rt);
-        result.setProperty(rt, key.c_str(), findRec(rt, key));
+        cppKeys.push_back(arr.getValueAtIndex(rt, i).asString(rt).utf8(rt));
     }
-    return createPromise(rt, [result = std::move(result)](auto& rt2, auto resolve, auto reject) mutable {
+    return createPromise(rt, [this, cppKeys](auto& rt2, auto resolve, auto reject) {
+        facebook::jsi::Object result(rt2);
+        for (const auto& key : cppKeys) {
+            result.setProperty(rt2, key.c_str(), findRec(rt2, key));
+        }
         resolve->call(rt2, std::move(result));
     });
 }
@@ -828,25 +831,26 @@ facebook::jsi::Value DBEngine::rangeQueryAsync(facebook::jsi::Runtime& rt, const
     auto obj = args.asObject(rt);
     std::string start = obj.getProperty(rt, "startKey").asString(rt).utf8(rt);
     std::string end = obj.getProperty(rt, "endKey").asString(rt).utf8(rt);
-    auto pairs = rangeQuery(rt, start, end);
-    facebook::jsi::Array result(rt, pairs.size());
-    for (size_t i = 0; i < pairs.size(); i++) {
-        facebook::jsi::Object item(rt);
-        item.setProperty(rt, "key", facebook::jsi::String::createFromUtf8(rt, pairs[i].first));
-        item.setProperty(rt, "value", std::move(pairs[i].second));
-        result.setValueAtIndex(rt, i, item);
-    }
-    return createPromise(rt, [result = std::move(result)](auto& rt2, auto resolve, auto reject) mutable {
+    
+    return createPromise(rt, [this, start, end](auto& rt2, auto resolve, auto reject) {
+        auto pairs = rangeQuery(rt2, start, end);
+        facebook::jsi::Array result(rt2, pairs.size());
+        for (size_t i = 0; i < pairs.size(); i++) {
+            facebook::jsi::Object item(rt2);
+            item.setProperty(rt2, "key", facebook::jsi::String::createFromUtf8(rt2, pairs[i].first));
+            item.setProperty(rt2, "value", std::move(pairs[i].second));
+            result.setValueAtIndex(rt2, i, item);
+        }
         resolve->call(rt2, std::move(result));
     });
 }
 
 facebook::jsi::Value DBEngine::getLocalChangesAsync(facebook::jsi::Runtime& rt, const facebook::jsi::Value& args) {
     // Returns {latest_clock, changes: []}
-    facebook::jsi::Object res(rt);
-    res.setProperty(rt, "latest_clock", facebook::jsi::Value(0.0));
-    res.setProperty(rt, "changes", facebook::jsi::Array(rt, 0));
-    return createPromise(rt, [res = std::move(res)](auto& rt2, auto resolve, auto reject) mutable {
+    return createPromise(rt, [](auto& rt2, auto resolve, auto reject) {
+        facebook::jsi::Object res(rt2);
+        res.setProperty(rt2, "latest_clock", facebook::jsi::Value(0.0));
+        res.setProperty(rt2, "changes", facebook::jsi::Array(rt2, 0));
         resolve->call(rt2, std::move(res));
     });
 }
@@ -865,6 +869,22 @@ facebook::jsi::Value DBEngine::markPushedAsync(facebook::jsi::Runtime& rt, const
 
 void DBEngine::setSecureMode(bool enable) { is_secure_mode_ = enable; }
 
+bool DBEngine::verifyHealth() {
+    return pbtree_ != nullptr && mmap_ != nullptr;
+}
+
+bool DBEngine::repair() {
+    return true; // Stub: WAL-first repair is handled inherently by startup currently
+}
+
+std::string DBEngine::getDatabasePath() const {
+    return mmap_ ? mmap_->getPath() : "";
+}
+
+std::string DBEngine::getWALPath() const {
+    return wal_ ? wal_->getWALPath() : "";
+}
+
 facebook::jsi::Value DBEngine::createPromise(
     facebook::jsi::Runtime& runtime,
     std::function<void(facebook::jsi::Runtime&, std::shared_ptr<facebook::jsi::Function>, std::shared_ptr<facebook::jsi::Function>)> executor)
@@ -872,10 +892,10 @@ facebook::jsi::Value DBEngine::createPromise(
     auto promiseConstructor = runtime.global().getPropertyAsFunction(runtime, "Promise");
     auto callback = facebook::jsi::Function::createFromHostFunction(
         runtime, facebook::jsi::PropNameID::forAscii(runtime, "executor"), 2,
-        [executor = std::move(executor)](facebook::jsi::Runtime& rt, const facebook::jsi::Value&, const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+        [executor](facebook::jsi::Runtime& rt, const facebook::jsi::Value&, const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
             auto resolve = std::make_shared<facebook::jsi::Function>(args[0].asObject(rt).asFunction(rt));
             auto reject = std::make_shared<facebook::jsi::Function>(args[1].asObject(rt).asFunction(rt));
-            executor(rt, std::move(resolve), std::move(reject));
+            executor(rt, resolve, reject);
             return facebook::jsi::Value::undefined();
         });
     return promiseConstructor.callAsConstructor(runtime, callback);
