@@ -105,50 +105,9 @@ Java_com_turbodb_TurboDBModule_isInitializedNative(JNIEnv *env, jobject thiz) {
     return g_dbEngine != nullptr ? JNI_TRUE : JNI_FALSE;
 }
 
-// ── Hardware Secure Item JNI Bridge ───────────────────────────────────────────
+JavaVM* g_jvm = nullptr;
 
-extern "C"
-JNIEXPORT jboolean JNICALL
-Java_com_turbodb_TurboDBModule_nativeSetSecureItem(JNIEnv *env, jobject,
-                                                   jstring jKey, jstring jValue) {
-    const char* key   = env->GetStringUTFChars(jKey,   nullptr);
-    const char* value = env->GetStringUTFChars(jValue, nullptr);
-
-    jclass cls   = env->FindClass("com/turbodb/KeyStoreManager");
-    jmethodID mid = env->GetStaticMethodID(cls, "setSecureItem",
-                                           "(Ljava/lang/String;Ljava/lang/String;)Z");
-    jboolean result = JNI_FALSE;
-    if (mid) {
-        result = env->CallStaticBooleanMethod(cls, mid, jKey, jValue);
-    }
-
-    env->ReleaseStringUTFChars(jKey,   key);
-    env->ReleaseStringUTFChars(jValue, value);
-    return result;
-}
-
-extern "C"
-JNIEXPORT jstring JNICALL
-Java_com_turbodb_TurboDBModule_nativeGetSecureItem(JNIEnv *env, jobject, jstring jKey) {
-    jclass cls   = env->FindClass("com/turbodb/KeyStoreManager");
-    jmethodID mid = env->GetStaticMethodID(cls, "getSecureItem",
-                                           "(Ljava/lang/String;)Ljava/lang/String;");
-    if (!mid) return env->NewStringUTF("");
-
-    jstring result = (jstring) env->CallStaticObjectMethod(cls, mid, jKey);
-    if (env->ExceptionCheck() || !result) {
-        env->ExceptionClear();
-        return env->NewStringUTF("");
-    }
-    return result;
-}
-
-extern "C"
-JNIEXPORT jboolean JNICALL
-Java_com_turbodb_TurboDBModule_nativeDeleteSecureItem(JNIEnv *env, jobject, jstring jKey) {
-    jclass cls   = env->FindClass("com/turbodb/KeyStoreManager");
-    jmethodID mid = env->GetStaticMethodID(cls, "deleteSecureItem",
-                                           "(Ljava/lang/String;)Z");
-    if (!mid) return JNI_FALSE;
-    return env->CallStaticBooleanMethod(cls, mid, jKey);
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    g_jvm = vm;
+    return JNI_VERSION_1_6;
 }

@@ -9,6 +9,8 @@
 #include <sstream>
 
 #ifdef __ANDROID__
+#include <jni.h>
+extern JavaVM* g_jvm;
 #include <android/log.h>
 #define LOG_TAG "TurboDB_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -357,6 +359,29 @@ facebook::jsi::Value DBEngine::get(
                 bool ok = false;
 #ifdef __APPLE__
                 ok = turbo_db::KeyManagerIOS::setSecureItem(k, v);
+#elif defined(__ANDROID__)
+                if (g_jvm) {
+                    JNIEnv* env = nullptr;
+                    bool attached = false;
+                    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+                        g_jvm->AttachCurrentThread(&env, nullptr);
+                        attached = true;
+                    }
+                    if (env) {
+                        jclass cls = env->FindClass("com/turbodb/KeyStoreManager");
+                        if (cls) {
+                            jmethodID mid = env->GetStaticMethodID(cls, "setSecureItem", "(Ljava/lang/String;Ljava/lang/String;)Z");
+                            if (mid) {
+                                jstring jKey = env->NewStringUTF(k.c_str());
+                                jstring jValue = env->NewStringUTF(v.c_str());
+                                ok = env->CallStaticBooleanMethod(cls, mid, jKey, jValue);
+                                env->DeleteLocalRef(jKey);
+                                env->DeleteLocalRef(jValue);
+                            }
+                        }
+                        if (attached) g_jvm->DetachCurrentThread();
+                    }
+                }
 #endif
                 return createPromise(rt, [ok](auto& r, auto resolve, auto) {
                     resolve->call(r, facebook::jsi::Value(ok));
@@ -378,6 +403,35 @@ facebook::jsi::Value DBEngine::get(
                 std::string result;
 #ifdef __APPLE__
                 result = turbo_db::KeyManagerIOS::getSecureItem(k);
+#elif defined(__ANDROID__)
+                if (g_jvm) {
+                    JNIEnv* env = nullptr;
+                    bool attached = false;
+                    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+                        g_jvm->AttachCurrentThread(&env, nullptr);
+                        attached = true;
+                    }
+                    if (env) {
+                        jclass cls = env->FindClass("com/turbodb/KeyStoreManager");
+                        if (cls) {
+                            jmethodID mid = env->GetStaticMethodID(cls, "getSecureItem", "(Ljava/lang/String;)Ljava/lang/String;");
+                            if (mid) {
+                                jstring jKey = env->NewStringUTF(k.c_str());
+                                jstring jRes = (jstring)env->CallStaticObjectMethod(cls, mid, jKey);
+                                if (jRes) {
+                                    const char* chars = env->GetStringUTFChars(jRes, nullptr);
+                                    if (chars) {
+                                        result = chars;
+                                        env->ReleaseStringUTFChars(jRes, chars);
+                                    }
+                                    env->DeleteLocalRef(jRes);
+                                }
+                                env->DeleteLocalRef(jKey);
+                            }
+                        }
+                        if (attached) g_jvm->DetachCurrentThread();
+                    }
+                }
 #endif
                 return createPromise(rt, [result](auto& r, auto resolve, auto) {
                     if (result.empty()) {
@@ -403,6 +457,27 @@ facebook::jsi::Value DBEngine::get(
                 bool ok = false;
 #ifdef __APPLE__
                 ok = turbo_db::KeyManagerIOS::deleteSecureItem(k);
+#elif defined(__ANDROID__)
+                if (g_jvm) {
+                    JNIEnv* env = nullptr;
+                    bool attached = false;
+                    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+                        g_jvm->AttachCurrentThread(&env, nullptr);
+                        attached = true;
+                    }
+                    if (env) {
+                        jclass cls = env->FindClass("com/turbodb/KeyStoreManager");
+                        if (cls) {
+                            jmethodID mid = env->GetStaticMethodID(cls, "deleteSecureItem", "(Ljava/lang/String;)Z");
+                            if (mid) {
+                                jstring jKey = env->NewStringUTF(k.c_str());
+                                ok = env->CallStaticBooleanMethod(cls, mid, jKey);
+                                env->DeleteLocalRef(jKey);
+                            }
+                        }
+                        if (attached) g_jvm->DetachCurrentThread();
+                    }
+                }
 #endif
                 return createPromise(rt, [ok](auto& r, auto resolve, auto) {
                     resolve->call(r, facebook::jsi::Value(ok));
