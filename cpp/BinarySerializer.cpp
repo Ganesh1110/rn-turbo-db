@@ -56,8 +56,10 @@ void BinarySerializer::serialize(facebook::jsi::Runtime& rt, const facebook::jsi
                     std::string keyStr;
                     if (keyVal.isString()) {
                         keyStr = keyVal.getString(rt).utf8(rt);
+                    } else if (keyVal.isNumber()) {
+                        keyStr = std::to_string(keyVal.getNumber());
                     } else {
-                        keyStr = keyVal.toString(rt).utf8(rt);
+                        keyStr = "unknown";
                     }
                     
                     uint32_t keyLen = static_cast<uint32_t>(keyStr.length());

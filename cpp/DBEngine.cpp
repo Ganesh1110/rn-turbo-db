@@ -60,7 +60,7 @@ facebook::jsi::Value DBEngine::get(
                    const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
                 std::string path = args[0].asString(rt).utf8(rt);
                 size_t size = static_cast<size_t>(args[1].asNumber());
-                bool sync = args[2].asObject(rt).getProperty(rt, "syncEnabled").asBool();
+                bool sync = args[2].isObject() ? args[2].asObject(rt).getProperty(rt, "syncEnabled").asBool() : false;
                 return facebook::jsi::Value(initStorage(path, size, sync));
             });
     }
