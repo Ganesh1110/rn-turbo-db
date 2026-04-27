@@ -117,10 +117,11 @@ private:
             std::shared_ptr<facebook::jsi::Function> reject)> executor);
 
     // Core insert (must be called on DBWorker or under unique_lock)
-    facebook::jsi::Value insertRecInternal(facebook::jsi::Runtime& runtime,
-                                            const std::string& key,
-                                            const facebook::jsi::Value& obj,
-                                            bool shouldCommit);
+    bool insertRecInternal(facebook::jsi::Runtime& runtime,
+                            const std::string& key,
+                            const std::vector<uint8_t>& plain_bytes,
+                            bool shouldCommit,
+                            bool is_tombstone);
 
     // Byte-level insert called from async path (no jsi::Runtime needed)
     // If outOffset is provided, returns the offset where data was written
@@ -171,5 +172,7 @@ void installDBEngine(
     std::shared_ptr<facebook::react::CallInvoker> js_invoker,
     std::unique_ptr<SecureCryptoContext> crypto = nullptr
 );
+
+std::shared_ptr<DBEngine> getDBEngine();
 
 } // namespace turbo_db

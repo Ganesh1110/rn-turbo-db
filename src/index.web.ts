@@ -145,7 +145,13 @@ export class TurboDB {
   private scheduleSave() {
     if (IS_SERVER) return;
     if (this.saveTimeout) clearTimeout(this.saveTimeout);
-    this.saveTimeout = setTimeout(() => this.persistToIndexedDB(), 100);
+    this.saveTimeout = setTimeout(
+      () =>
+        this.persistToIndexedDB().catch((e) =>
+          console.error('[TurboDB Web] scheduleSave persist failed:', e)
+        ),
+      100
+    );
   }
 
   private async persistToIndexedDB(): Promise<void> {

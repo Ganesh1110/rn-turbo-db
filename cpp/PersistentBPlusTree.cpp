@@ -124,13 +124,15 @@ uint64_t PersistentBPlusTree::allocate_node(bool is_leaf) {
         std::memcpy(&fb, bytes.data(), sizeof(FreeBlock));
         header_.free_list_head = fb.next;
     } else {
-        // Nodes are stored at 4096-byte aligned offsets starting after the header page
-        offset = 4096 + (static_cast<uint64_t>(header_.node_count) * sizeof(BTreeNode));
+        // Nodes are stored at 4096-byte aligned offsets. 
+        // BTreeNode is roughly 16KB, so we must align to 16KB boundaries to avoid overlaps.
+        size_t node_stride = (sizeof(BTreeNode) + 4095) & ~4095;
+        offset = 4096 + (static_cast<uint64_t>(header_.node_count) * node_stride);
         
         // Safety check: Don't grow node area into the data record area (starts at 1MB)
-        if (offset + sizeof(BTreeNode) >= 1024 * 1024) {
-            LOGE("PersistentBPlusTree: Out of index space! B-Tree region exceeded 1MB.");
-            throw std::runtime_error("Database index area full (Max 1MB). Reduce data volume or increase index boundary.");
+        if (offset + node_stride >= 1024 * 1024) {
+            LOGE("PersistentBPlusTree: Out of index space! offset=%llu, stride=%zu", offset, node_stride);
+            throw std::runtime_error("Database index area full (Max 1MB).");
         }
         
         header_.node_count++;
@@ -427,6 +429,25 @@ std::vector<std::string> PersistentBPlusTree::getKeysPaged(int limit, int offset
 
     traverseInOrder(header_.root_offset, skip, collect, result);
     return result;
+}
+
+void PersistentBPlusTree::clear() {
+    std::unique_lock lock(tree_mutex_);
+    cache_.clear();
+    
+    // Reset header
+    header_.root_offset    = 4096;
+    header_.node_count     = 1;
+    header_.height         = 1;
+    header_.free_list_head = 0;
+    // next_free_offset is managed by DBEngine
+    
+    BTreeNode root_node;
+    std::memset(&root_node, 0, sizeof(BTreeNode));
+    root_node.is_leaf = true;
+    write_node(header_.root_offset, root_node);
+    
+    checkpoint();
 }
 
 } // namespace turbo_db

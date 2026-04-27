@@ -17,7 +17,7 @@ uint32_t calculate_crc32(const uint8_t* data, size_t length);
 // Format versioning: bump TREE_FORMAT_VERSION whenever BTreeNode layout changes.
 // initStorage() detects a version mismatch and rebuilds the database.
 // ─────────────────────────────────────────────────────────────────────────────
-static constexpr uint32_t TREE_FORMAT_VERSION = 2; // KEY_SIZE bumped 64→256
+static constexpr uint32_t TREE_FORMAT_VERSION = 3; // Bumped due to node alignment & record alignment changes
 
 #pragma pack(push, 1)
 struct TreeHeader {
@@ -177,11 +177,13 @@ public:
 
     const BTreeNodeConfig& getConfig() const { return config_; }
 
-    // Tree depth for monitoring
+    // Query depth for monitoring
     int getTreeDepth() const {
         std::shared_lock lock(tree_mutex_);
         return static_cast<int>(header_.height);
     }
+
+    void clear();
 
 private:
     MMapRegion* mmap_;

@@ -18,8 +18,8 @@
 
 namespace turbo_db {
 
-Compactor::Compactor(std::string db_path, SecureCryptoContext* crypto)
-    : db_path_(std::move(db_path)), crypto_(crypto) {}
+Compactor::Compactor(DBEngine* engine, MMapRegion* mmap, BufferedBTree* btree, std::string db_path, SecureCryptoContext* crypto)
+    : engine_(engine), mmap_(mmap), btree_(btree), db_path_(std::move(db_path)), crypto_(crypto) {}
 
 double Compactor::getFragmentationRatio(size_t live_bytes, size_t total_file_bytes) const {
     if (total_file_bytes == 0) return 0.0;

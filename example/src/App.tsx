@@ -40,7 +40,7 @@ const BenchmarkPage = () => {
       const benchPath = `${docsDir}/bench_turbo_standalone.db`;
       // Use async factory to guarantee initStorage before any operation
       const secureDB = await TurboDB.create(benchPath, 20 * 1024 * 1024);
-      await secureDB.deleteAll();
+      await secureDB.deleteAllAsync();
 
       const entries: Record<string, any> = {};
       for (let i = 0; i < NUM_OPERATIONS; i++) {
@@ -70,7 +70,7 @@ const BenchmarkPage = () => {
       times.push(Date.now() - rangeStart);
 
       const deleteStart = Date.now();
-      await secureDB.deleteAll();
+      await secureDB.deleteAllAsync();
       times.push(Date.now() - deleteStart);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
@@ -187,17 +187,27 @@ export default function App() {
   useEffect(() => {
     const initDB = async () => {
       try {
-        TurboDB.install(); // Install native JSI bindings first
+        // In Fabric/Bridgeless mode, a short delay before the very first JSI call
+        // can help ensure the native modules are fully wired up.
+        await new Promise((r) => setTimeout(r, 1000));
+
         const docPath = TurboDB.getDocumentsDirectory();
         setDbPath(docPath);
         const dbFile = `${docPath}/secure_v1.db`;
-        // Use async factory — guarantees initStorage before any DB call
+
+        // TurboDB.create() internally handles JSI installation and storage init
         const newDb = await TurboDB.create(dbFile, 10 * 1024 * 1024, {
           syncEnabled: true,
         });
         setDb(newDb);
+
+        setStatusType('success');
+        setStatusMessage('🚀 TurboDB Engine Ready');
+        setTimeout(() => setStatusMessage(''), 3000);
       } catch (e) {
         console.error('[App] DB initialization failed:', e);
+        setStatusType('error');
+        setStatusMessage(`Init Failed: ${String(e)}`);
         Alert.alert('DB Error', `Failed to initialize database: ${String(e)}`);
       }
     };
@@ -262,8 +272,9 @@ export default function App() {
     }
   };
 
-  const handleDel = () => {
-    if (!key) {
+  const handleDel = (targetKey?: string) => {
+    const k = targetKey || key;
+    if (!k) {
       setStatusType('error');
       setStatusMessage('Please enter a key');
       return;
@@ -273,23 +284,26 @@ export default function App() {
       setStatusMessage('Database not initialized');
       return;
     }
-    Alert.alert('Delete Key', `Are you sure you want to delete "${key}"?`, [
+    Alert.alert('Delete Key', `Are you sure you want to delete "${k}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
           try {
-            const result = db.del(key);
+            const result = db.del(k);
             if (result) {
-              setGetResult('');
+              if (k === key) {
+                setGetResult('');
+                setKey('');
+              }
               refreshKeys();
               setStatusType('success');
-              setStatusMessage(`🗑️ Deleted: ${key}`);
+              setStatusMessage(`🗑️ Deleted: ${k}`);
               setTimeout(() => setStatusMessage(''), 2000);
             } else {
               setStatusType('error');
-              setStatusMessage(`Key not found: ${key}`);
+              setStatusMessage(`Key not found: ${k}`);
             }
           } catch (e) {
             setStatusType('error');
@@ -441,7 +455,7 @@ export default function App() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.button, { backgroundColor: '#F59E0B' }]}
-                  onPress={handleDel}
+                  onPress={() => handleDel()}
                 >
                   <Text style={[styles.buttonText, { color: '#fff' }]}>
                     🗑️ DEL
@@ -515,8 +529,8 @@ export default function App() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.advancedButton, { borderColor: '#EF4444' }]}
-                    onPress={() => {
-                      db?.clear();
+                    onPress={async () => {
+                      await db?.deleteAllAsync();
                       refreshKeys();
                       setStatusMessage('💥 Database Wiped');
                       setTimeout(() => setStatusMessage(''), 2000);
@@ -592,10 +606,7 @@ export default function App() {
                         </TouchableOpacity>
                         <TouchableOpacity
                           onPress={() => {
-                            setKey(k);
-                            // Use a short timeout to let setKey propagate before handleDel reads it
-                            // Better pattern: pass key directly
-                            setTimeout(() => handleDel(), 0);
+                            handleDel(k);
                           }}
                         >
                           <Text style={styles.actionIcon}>🗑️</Text>

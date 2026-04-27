@@ -178,4 +178,13 @@ std::vector<std::pair<std::string, size_t>> BufferedBTree::range(const std::stri
     return results;
 }
 
+void BufferedBTree::clear() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    write_buffer_.clear();
+    flushing_buffer_.clear();
+    if (tree_) {
+        tree_->clear();
+    }
+}
+
 }

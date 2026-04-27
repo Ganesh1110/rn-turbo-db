@@ -1,16 +1,36 @@
 import { TurboModuleRegistry, NativeModules } from 'react-native';
+import NativeTurboDB from './NativeTurboDB';
 import type { Spec } from './NativeTurboDB';
 import type { SyncChanges, SyncRecord, SyncAck } from './SyncManager';
 import { TurboDBError, TurboDBErrorCode } from './TurboDBError';
 
 export { TurboDBError, TurboDBErrorCode };
 
-const NativeTurboDB =
-  TurboModuleRegistry.get<Spec>('TurboDB') || (NativeModules as any).TurboDB;
+// Use the resolved Spec from NativeTurboDB.ts, or fallback to manual lookup/Bridge.
+// We do the fallback here instead of in NativeTurboDB.ts to avoid Codegen parser errors.
+const NativeDBModule =
+  NativeTurboDB ||
+  TurboModuleRegistry.get<Spec>('NativeTurboDB') ||
+  (NativeModules as any).TurboDB ||
+  (NativeModules as any).NativeTurboDB;
+
+export function isNativeLibraryReady(): boolean {
+  return typeof getNativeDB() !== 'undefined';
+}
+
+export function getLibraryStatus(): {
+  nativeModuleLoaded: boolean;
+  nativeDbReady: boolean;
+  error?: string;
+} {
+  return {
+    nativeModuleLoaded: !!NativeTurboDB,
+    nativeDbReady: typeof getNativeDB() !== 'undefined',
+  };
+}
 
 declare const global: {
   NativeDB: {
-    // ── Sync API ──
     initStorage(
       path: string,
       size: number,
@@ -22,7 +42,7 @@ declare const global: {
     setMulti(entries: Record<string, any>): boolean;
     getMultiple(keys: string[]): Record<string, any>;
     remove(key: string): boolean;
-    del(key: string): boolean; // Alias for remove
+    del(key: string): boolean;
     deleteAll(): boolean;
     benchmark(): number;
     rangeQuery(
@@ -32,8 +52,6 @@ declare const global: {
     getAllKeys(): string[];
     getAllKeysPaged(limit: number, offset: number): string[];
     flush(): void;
-    merge(key: string, partial: Record<string, any>): boolean;
-    // ── Async API ──
     setAsync(args: { key: string; value: any }): Promise<boolean>;
     getAsync(key: string): Promise<any>;
     setMultiAsync(entries: Record<string, any>): Promise<boolean>;
@@ -44,11 +62,9 @@ declare const global: {
     }): Promise<Array<{ key: string; value: any }>>;
     getAllKeysAsync(): Promise<string[]>;
     removeAsync(key: string): Promise<boolean>;
-    // ── Sync APIs ──
     getLocalChangesAsync(lastSyncClock: number): Promise<any>;
     applyRemoteChangesAsync(changes: any[]): Promise<boolean>;
     markPushedAsync(acks: any[]): Promise<boolean>;
-    // ── Diagnostics ──
     verifyHealth(): boolean;
     repair(): boolean;
     getDatabasePath(): string;
@@ -63,7 +79,32 @@ declare const global: {
     };
     setSecureMode(enable: boolean): void;
   };
+  __NativeDB: any;
 };
+
+let nativeDBProvider: () => any;
+
+export function registerNativeDBGetter(getter: () => any) {
+  nativeDBProvider = getter;
+}
+
+function getNativeDB(): any {
+  // Deep search for the JSI property across all possible global containers
+  const g: any =
+    (typeof global !== 'undefined' ? global : null) ||
+    (typeof globalThis !== 'undefined' ? globalThis : null) ||
+    (typeof window !== 'undefined' ? window : null);
+
+  if (g) {
+    if (g.NativeDB !== undefined) return g.NativeDB;
+    if (g.__NativeDB !== undefined) return g.__NativeDB;
+  }
+
+  if (nativeDBProvider) {
+    return nativeDBProvider();
+  }
+  return undefined;
+}
 
 export type DBMode = 'secure' | 'turbo';
 
@@ -118,22 +159,30 @@ export class TurboDB {
    * (e.g., in index.js before any DB usage).
    */
   static install(): void {
-    if (!NativeTurboDB) {
+    if (!NativeDBModule) {
       console.error(
-        "[TurboDB] Native module 'TurboDB' not found. " +
+        '[TurboDB] Native module (TurboDB) not found. ' +
           'Rebuild the native app (npx react-native run-ios / run-android).'
       );
-      return;
+      throw new Error(
+        '[TurboDB] Native module (TurboDB) not found. Rebuild the native app.'
+      );
     }
-    NativeTurboDB.install();
+    try {
+      NativeDBModule.install();
+    } catch (e: any) {
+      console.error('[TurboDB] install() failed:', e);
+      throw new Error(`[TurboDB] install() failed: ${e.message}`);
+    }
   }
 
   static getDocumentsDirectory(): string {
-    if (!NativeTurboDB) return '';
-    return NativeTurboDB.getDocumentsDirectory();
+    if (!NativeDBModule) return '';
+    return NativeDBModule.getDocumentsDirectory();
   }
 
   private isInitialized = false;
+  private initPromise: Promise<void> | null = null;
 
   /**
    * ⚠️ Prefer `TurboDB.create()` over the constructor.
@@ -152,31 +201,71 @@ export class TurboDB {
    */
   private async _initAsync(): Promise<void> {
     if (this.isInitialized) return;
+    if (this.initPromise) return this.initPromise;
 
-    if (!NativeTurboDB) {
-      throw new Error(
-        '[TurboDB] Native module not found. Check your native build.'
-      );
-    }
+    this.initPromise = (async () => {
+      if (!NativeDBModule) {
+        throw new Error(
+          '[TurboDB] Native module (TurboDB) not found. Verify your native build.'
+        );
+      }
 
-    TurboDB.install();
+      try {
+        const success = NativeDBModule.install();
+        if (!success) {
+          console.warn(
+            '[TurboDB] Native install() returned false — JSI runtime might not be ready yet.'
+          );
+        }
+      } catch (e: any) {
+        console.error('[TurboDB] install() critical failure:', e);
+        throw new Error(`[TurboDB] install() failure: ${e.message}`);
+      }
 
-    if (typeof global.NativeDB === 'undefined') {
-      throw new Error(
-        '[TurboDB] NativeDB JSI object not found after install(). ' +
-          'Check native logs for errors.'
-      );
-    }
+      let db = getNativeDB();
+      if (!db) {
+        // We poll for up to 10 seconds total (100ms * 100)
+        // This is safe because it's async and only happens once.
+        for (let i = 0; i < 100; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          db = getNativeDB();
+          if (db) {
+            console.log('[TurboDB] JSI Connection Established ✅');
+            break;
+          }
 
-    const success = global.NativeDB.initStorage(this.path, this.size, {
-      syncEnabled: this.options.syncEnabled ?? false,
-    });
-    if (!success) {
-      throw new Error(`[TurboDB] Failed to initialize storage at ${this.path}`);
-    }
-    this.isInitialized = true;
+          if (i % 20 === 0 && i > 0) {
+            console.log(
+              `[TurboDB] Still waiting for JSI bridge (${i / 10}s)...`
+            );
+            // Try to re-invoke install in case the runtime context changed
+            try {
+              NativeDBModule.install();
+            } catch {}
+          }
+        }
+      }
+
+      if (!db) {
+        throw new Error(
+          '[TurboDB] NativeDB JSI object not found after install(). ' +
+            'Check native logs for errors. This may be a JSI runtime mismatch in bridgeless mode.'
+        );
+      }
+
+      const success = db.initStorage(this.path, this.size, {
+        syncEnabled: this.options.syncEnabled ?? false,
+      });
+      if (!success) {
+        throw new Error(
+          `[TurboDB] Failed to initialize storage at ${this.path}`
+        );
+      }
+      this.isInitialized = true;
+    })();
+
+    return this.initPromise;
   }
-
   /**
    * Sync init — only for backward compat. Prefer async.
    * Does NOT use a busy-wait — throws immediately if NativeDB is not ready.
@@ -184,22 +273,26 @@ export class TurboDB {
   private ensureInitialized(): void {
     if (this.isInitialized) return;
 
-    if (!NativeTurboDB) {
+    if (!NativeDBModule) {
       throw new Error(
-        '[TurboDB] Native module not found. Check your native build.'
+        '[TurboDB] Native module (TurboDB) not found. Check your native build.'
       );
     }
 
-    TurboDB.install();
+    try {
+      NativeDBModule.install();
+    } catch (e: any) {
+      throw new Error(`[TurboDB] install() failed: ${e.message}`);
+    }
 
-    if (typeof global.NativeDB === 'undefined') {
+    if (typeof getNativeDB() === 'undefined') {
       throw new Error(
-        '[TurboDB] NativeDB not found. ' +
-          'Use TurboDB.create() for async initialization.'
+        '[TurboDB] NativeDB JSI object not found after install(). ' +
+          'Use TurboDB.create() for async initialization with automatic retry.'
       );
     }
 
-    const success = global.NativeDB.initStorage(this.path, this.size, {
+    const success = getNativeDB().initStorage(this.path, this.size, {
       syncEnabled: this.options.syncEnabled ?? false,
     });
     if (!success) {
@@ -308,7 +401,7 @@ export class TurboDB {
 
   private async updateIndex(key: string, field: string, value: any) {
     const idxKey = `__idx:${field}:${value}:${key}`;
-    await global.NativeDB.setAsync({ key: idxKey, value: key });
+    await getNativeDB().setAsync({ key: idxKey, value: key });
   }
 
   /**
@@ -324,12 +417,17 @@ export class TurboDB {
 
   set(key: string, value: any): boolean {
     this.ensureInitialized();
-    const success = global.NativeDB.insertRec(key, value);
+    const success = getNativeDB().insertRec(key, value);
     if (success) {
       // Background index update
       this.indexes.forEach((field) => {
         if (value && value[field] !== undefined) {
-          this.updateIndex(key, field, value[field]);
+          this.updateIndex(key, field, value[field]).catch((e) =>
+            console.error(
+              `[TurboDB] Index update failed for field ${field}:`,
+              e
+            )
+          );
         }
       });
       this.notify('set', key, value);
@@ -366,7 +464,7 @@ export class TurboDB {
 
   get<T = any>(key: string): T | undefined {
     this.ensureInitialized();
-    const val = global.NativeDB.findRec(key);
+    const val = getNativeDB().findRec(key);
 
     // TTL Check
     if (val && typeof val === 'object' && '__ttl_expiry' in val) {
@@ -404,7 +502,7 @@ export class TurboDB {
 
   setMulti(entries: Record<string, any>): boolean {
     this.ensureInitialized();
-    const success = global.NativeDB.setMulti(entries);
+    const success = getNativeDB().setMulti(entries);
     if (success) {
       Object.entries(entries).forEach(([k, v]) => this.notify('set', k, v));
     }
@@ -418,12 +516,12 @@ export class TurboDB {
 
   getMultiple(keys: string[]): Record<string, any> {
     this.ensureInitialized();
-    return global.NativeDB.getMultiple(keys);
+    return getNativeDB().getMultiple(keys);
   }
 
   remove(key: string): boolean {
     this.ensureInitialized();
-    const success = global.NativeDB.remove(key);
+    const success = getNativeDB().remove(key);
     if (success) {
       this.notify('remove', key);
     }
@@ -459,17 +557,26 @@ export class TurboDB {
 
   deleteAll(): boolean {
     this.ensureInitialized();
-    return global.NativeDB.deleteAll();
+    return getNativeDB().deleteAll();
+  }
+
+  /**
+   * Async version of deleteAll().
+   * Delegates to the native deleteAll() directly — faster than enumerating all keys.
+   */
+  async deleteAllAsync(): Promise<boolean> {
+    this.ensureInitialized();
+    return getNativeDB().deleteAll();
   }
 
   benchmark(): number {
     this.ensureInitialized();
-    return global.NativeDB.benchmark();
+    return getNativeDB().benchmark();
   }
 
   rangeQuery(startKey: string, endKey: string): RangeQueryResult[] {
     this.ensureInitialized();
-    return global.NativeDB.rangeQuery(startKey, endKey);
+    return getNativeDB().rangeQuery(startKey, endKey);
   }
 
   /**
@@ -564,7 +671,7 @@ export class TurboDB {
 
   getAllKeys(): string[] {
     this.ensureInitialized();
-    return global.NativeDB.getAllKeys();
+    return getNativeDB().getAllKeys();
   }
 
   /**
@@ -667,17 +774,17 @@ export class TurboDB {
   /** O(limit) paged enumeration — does NOT load all keys */
   getAllKeysPaged(limit: number, offset: number): string[] {
     this.ensureInitialized();
-    return global.NativeDB.getAllKeysPaged(limit, offset);
+    return getNativeDB().getAllKeysPaged(limit, offset);
   }
 
   clear(): boolean {
     this.ensureInitialized();
-    return global.NativeDB.clearStorage();
+    return getNativeDB().clearStorage();
   }
 
   flush(): void {
     this.ensureInitialized();
-    global.NativeDB.flush();
+    getNativeDB().flush();
   }
 
   // ── Asynchronous API (non-blocking — all run on DBWorker thread) ──────────
@@ -688,8 +795,19 @@ export class TurboDB {
    */
   async setAsync(key: string, value: any): Promise<boolean> {
     this.ensureInitialized();
-    const success = await global.NativeDB.setAsync({ key, value });
+    const success = await getNativeDB().setAsync({ key, value });
     if (success) {
+      // Background index update
+      this.indexes.forEach((field) => {
+        if (value && value[field] !== undefined) {
+          this.updateIndex(key, field, value[field]).catch((e) =>
+            console.error(
+              `[TurboDB] Index update failed for field ${field}:`,
+              e
+            )
+          );
+        }
+      });
       this.notify('set', key, value);
     }
     return success;
@@ -700,7 +818,7 @@ export class TurboDB {
    */
   async getAsync<T = any>(key: string): Promise<T | undefined> {
     this.ensureInitialized();
-    const val = await global.NativeDB.getAsync(key);
+    const val = await getNativeDB().getAsync(key);
 
     // TTL Check for async get
     if (val && typeof val === 'object' && '__ttl_expiry' in val) {
@@ -720,9 +838,18 @@ export class TurboDB {
    */
   async setMultiAsync(entries: Record<string, any>): Promise<boolean> {
     this.ensureInitialized();
-    const success = await global.NativeDB.setMultiAsync(entries);
+    const success = await getNativeDB().setMultiAsync(entries);
     if (success) {
-      Object.entries(entries).forEach(([k, v]) => this.notify('set', k, v));
+      Object.entries(entries).forEach(([k, v]) => {
+        this.indexes.forEach((field) => {
+          if (v && v[field] !== undefined) {
+            this.updateIndex(k, field, v[field]).catch((e) =>
+              console.error(`[TurboDB] Index update failed for key ${k}:`, e)
+            );
+          }
+        });
+        this.notify('set', k, v);
+      });
     }
     return success;
   }
@@ -737,7 +864,7 @@ export class TurboDB {
    */
   async getMultipleAsync(keys: string[]): Promise<Record<string, any>> {
     this.ensureInitialized();
-    return global.NativeDB.getMultipleAsync(keys);
+    return getNativeDB().getMultipleAsync(keys);
   }
 
   /**
@@ -748,7 +875,7 @@ export class TurboDB {
     endKey: string
   ): Promise<RangeQueryResult[]> {
     this.ensureInitialized();
-    return global.NativeDB.rangeQueryAsync({ startKey, endKey });
+    return getNativeDB().rangeQueryAsync({ startKey, endKey });
   }
 
   /**
@@ -756,7 +883,7 @@ export class TurboDB {
    */
   async getAllKeysAsync(): Promise<string[]> {
     this.ensureInitialized();
-    return global.NativeDB.getAllKeysAsync();
+    return getNativeDB().getAllKeysAsync();
   }
 
   /**
@@ -765,7 +892,7 @@ export class TurboDB {
    */
   async removeAsync(key: string): Promise<boolean> {
     this.ensureInitialized();
-    const success = await global.NativeDB.removeAsync(key);
+    const success = await getNativeDB().removeAsync(key);
     if (success) {
       this.notify('remove', key);
     }
@@ -779,7 +906,7 @@ export class TurboDB {
    */
   async getLocalChangesAsync(lastSyncClock: number): Promise<SyncChanges> {
     this.ensureInitialized();
-    return global.NativeDB.getLocalChangesAsync(lastSyncClock);
+    return getNativeDB().getLocalChangesAsync(lastSyncClock);
   }
 
   /**
@@ -787,7 +914,7 @@ export class TurboDB {
    */
   async applyRemoteChangesAsync(changes: SyncRecord[]): Promise<boolean> {
     this.ensureInitialized();
-    return global.NativeDB.applyRemoteChangesAsync(changes);
+    return getNativeDB().applyRemoteChangesAsync(changes);
   }
 
   /**
@@ -795,29 +922,29 @@ export class TurboDB {
    */
   async markPushedAsync(acks: SyncAck[]): Promise<boolean> {
     this.ensureInitialized();
-    return global.NativeDB.markPushedAsync(acks);
+    return getNativeDB().markPushedAsync(acks);
   }
 
   // ── Diagnostics ───────────────────────────────────────────────────────────
 
   verifyHealth(): boolean {
     this.ensureInitialized();
-    return global.NativeDB.verifyHealth();
+    return getNativeDB().verifyHealth();
   }
 
   repair(): boolean {
     this.ensureInitialized();
-    return global.NativeDB.repair();
+    return getNativeDB().repair();
   }
 
   getDatabasePath(): string {
     this.ensureInitialized();
-    return global.NativeDB.getDatabasePath();
+    return getNativeDB().getDatabasePath();
   }
 
   getWALPath(): string {
     this.ensureInitialized();
-    return global.NativeDB.getWALPath();
+    return getNativeDB().getWALPath();
   }
 
   /**
@@ -825,7 +952,7 @@ export class TurboDB {
    */
   getStats(): DBStats {
     this.ensureInitialized();
-    return global.NativeDB.getStats();
+    return getNativeDB().getStats();
   }
 
   /**
@@ -900,7 +1027,7 @@ export class TurboDB {
    */
   async compact(): Promise<boolean> {
     this.ensureInitialized();
-    return global.NativeDB.repair();
+    return getNativeDB().repair();
   }
 
   /**
@@ -961,7 +1088,7 @@ export class TurboDB {
 
   setSecureMode(enable: boolean): void {
     this.ensureInitialized();
-    global.NativeDB.setSecureMode(enable);
+    getNativeDB().setSecureMode(enable);
   }
 }
 

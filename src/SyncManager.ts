@@ -76,6 +76,8 @@ export class SyncManager {
    * Start the background sync loop.
    */
   async start(): Promise<void> {
+    // Allow re-starting after a previous stop()
+    this.isPaused = false;
     try {
       const state = await this.db.getAsync(this.CURSOR_KEY);
       if (state && typeof state.lastRemoteVersion === 'number') {
@@ -101,6 +103,9 @@ export class SyncManager {
       clearTimeout(this.syncTimer);
       this.syncTimer = null;
     }
+    // Set isPaused so that any in-flight forceSync() finally-block
+    // does NOT re-schedule via scheduleNextSync().
+    this.isPaused = true;
     this.notify('stopped');
   }
 

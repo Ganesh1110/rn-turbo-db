@@ -31,6 +31,9 @@ public:
     
     // Force commit to disk tree
     void flush();
+
+    // Clear write buffer and disk tree
+    void clear();
     
     // Get all keys from buffer and tree
     std::vector<std::string> getAllKeys();

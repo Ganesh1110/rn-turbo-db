@@ -17,6 +17,7 @@ public:
 
   void install(jsi::Runtime& rt);
   std::string getDocumentsDirectory(jsi::Runtime& rt);
+  bool isInitialized(jsi::Runtime& rt);
   std::string getVersion(jsi::Runtime& rt);
 };
 

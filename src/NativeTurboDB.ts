@@ -10,10 +10,13 @@ import { TurboModuleRegistry } from 'react-native';
  * by the C++ JSI host object (DBEngine), AFTER install() is called.
  */
 export interface Spec extends TurboModule {
-  install(): void;
+  /**
+   * Returns true if JSI installation was successful.
+   * Marking return type as boolean helps Codegen/TurboModule handle it more reliably.
+   */
+  install(): boolean;
   getDocumentsDirectory(): string;
+  isInitialized(): boolean;
 }
 
-// getEnforcing crashes on web/SSR. Use safe get() instead.
-// install() failure is surfaced in TurboDB.install() with a clear error message.
 export default TurboModuleRegistry.get<Spec>('TurboDB');
