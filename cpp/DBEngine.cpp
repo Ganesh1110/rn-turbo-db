@@ -656,8 +656,15 @@ bool DBEngine::insertRecInternal(
     
     if (pbtree_) {
         pbtree_->setNextFreeOffset(next_free_offset_);
-        pbtree_->checkpoint();
+        // Write the key→offset mapping directly to the persistent B+Tree so it
+        // is durable even if the app is killed before BufferedBTree's background
+        // worker reaches BATCH_SIZE. pbtree_->insert() is WAL-logged and calls
+        // checkpoint(), ensuring the header is also updated atomically.
+        pbtree_->insert(key, offset, true);
     }
+    // Also update the in-memory BufferedBTree buffer for fast same-session reads.
+    // The background worker will call pbtree_->insert() again later, which is
+    // safe because it is an idempotent upsert (same key, same offset).
     btree_->insert(key, offset);
     return true;
 }
@@ -671,14 +678,70 @@ bool DBEngine::insertRecBytes(
     size_t* outOffset)
 {
     if (!btree_ || !mmap_) return false;
+    
+    const uint8_t* payload_ptr = nullptr;
+    size_t payload_len = plain.size();
+    std::vector<uint8_t> encrypted;
+
+    if (payload_len > 0) {
+        payload_ptr = plain.data();
+        if (crypto_ && !is_tombstone) {
+            encrypted = crypto_->encrypt(plain.data(), plain.size());
+            payload_ptr = encrypted.data();
+            payload_len = encrypted.size();
+        }
+    }
+
     next_free_offset_ = (next_free_offset_ + 7) & ~7;
     size_t offset = next_free_offset_;
-    uint32_t len32 = static_cast<uint32_t>(plain.size());
+    uint32_t len32 = static_cast<uint32_t>(payload_len);
+    if (sync_enabled_) len32 += sizeof(SyncMetadata);
+
+    SyncMetadata meta;
+    if (sync_enabled_) {
+        if (explicit_meta) {
+            std::memcpy(&meta, explicit_meta, sizeof(SyncMetadata));
+        } else {
+            std::memset(&meta, 0, sizeof(SyncMetadata));
+            meta.flags = (is_tombstone ? SYNC_FLAG_TOMBSTONE : 0);
+        }
+    }
+
+    uint32_t crc32 = 0;
+    if (is_secure_mode_ && wal_) {
+        std::vector<uint8_t> full;
+        if (sync_enabled_) {
+            uint8_t* m = reinterpret_cast<uint8_t*>(&meta);
+            full.insert(full.end(), m, m + sizeof(SyncMetadata));
+        }
+        if (payload_len > 0) full.insert(full.end(), payload_ptr, payload_ptr + payload_len);
+        crc32 = wal_->calculate_crc32(full.data(), full.size());
+    }
+
     mmap_->write(offset, reinterpret_cast<const uint8_t*>(&len32), sizeof(uint32_t));
-    if (plain.size() > 0) mmap_->write(offset + sizeof(uint32_t), plain.data(), plain.size());
+    if (sync_enabled_) {
+        mmap_->write(offset + sizeof(uint32_t), reinterpret_cast<const uint8_t*>(&meta), sizeof(SyncMetadata));
+        if (payload_len > 0) mmap_->write(offset + sizeof(uint32_t) + sizeof(SyncMetadata), payload_ptr, payload_len);
+    } else {
+        if (payload_len > 0) mmap_->write(offset + sizeof(uint32_t), payload_ptr, payload_len);
+    }
     
-    next_free_offset_ += (sizeof(uint32_t) + plain.size() + 7) & ~7;
-    if (pbtree_) pbtree_->setNextFreeOffset(next_free_offset_);
+    if (is_secure_mode_) {
+        mmap_->write(offset + sizeof(uint32_t) + len32, reinterpret_cast<const uint8_t*>(&crc32), sizeof(uint32_t));
+    }
+
+    size_t total = sizeof(uint32_t) + len32 + (is_secure_mode_ ? sizeof(uint32_t) : 0);
+    next_free_offset_ += (total + 7) & ~7;
+    
+    if (pbtree_) {
+        pbtree_->setNextFreeOffset(next_free_offset_);
+        // Persist key immediately so data survives an app kill before the
+        // BufferedBTree worker thread reaches BATCH_SIZE (1024).
+        // shouldCommit controls whether checkpoint() is also called here;
+        // WAL-based recovery covers the node write even without a checkpoint.
+        pbtree_->insert(key, offset, shouldCommit);
+    }
+    // Cache in the in-memory buffer for fast subsequent reads in the same session.
     btree_->insert(key, offset);
     if (outOffset) *outOffset = offset;
     return true;
@@ -734,15 +797,14 @@ facebook::jsi::Value DBEngine::findRec(
     }
 
     // ── 4. Deserialize the plaintext ─────────────────────────────────────────
-    std::shared_ptr<std::vector<uint8_t>> data =
-        std::make_shared<std::vector<uint8_t>>(data_ptr, data_ptr + data_len);
-
-    if (!data->empty() && static_cast<BinaryType>((*data)[0]) == BinaryType::Object) {
-        return facebook::jsi::Object::createFromHostObject(
-            runtime, std::make_shared<LazyRecordProxy>(std::move(data)));
-    }
-
-    auto result = BinarySerializer::deserialize(runtime, data->data(), data->size());
+    // ── 4. Deserialize and return a standard JSI value ───────────────────────
+    // NOTE: LazyRecordProxy (HostObject) was previously used here for
+    // BinaryType::Object to defer deserialization. Removed because HostObjects
+    // break JSON.stringify(), Object.keys(), spread ({...val}), and the `in`
+    // operator in some Hermes versions — all common patterns in RN apps.
+    // BinarySerializer::deserialize is used for all types, returning standard
+    // JSI Values (Object / Array / String / Number / Boolean / null).
+    auto result = BinarySerializer::deserialize(runtime, data_ptr, data_len);
     return std::move(result.first);
 }
 
