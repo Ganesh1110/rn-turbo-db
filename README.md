@@ -1,8 +1,8 @@
-# rn-turbo-db
+# react-native-turbo-db
 
-[![NPM Version](https://img.shields.io/npm/v/rn-turbo-db.svg?style=flat-square)](https://www.npmjs.com/package/rn-turbo-db)
-[![License](https://img.shields.io/npm/l/rn-turbo-db.svg?style=flat-square)](https://npmjs.org/package/rn-turbo-db)
-[![Platform](https://img.shields.io/badge/platform-android%20%7C%20ios%20%7C%20web-blue.svg?style=flat-square)](https://npmjs.org/package/rn-turbo-db)
+[![NPM Version](https://img.shields.io/npm/v/react-native-turbo-db.svg?style=flat-square)](https://www.npmjs.com/package/react-native-turbo-db)
+[![License](https://img.shields.io/npm/l/react-native-turbo-db.svg?style=flat-square)](https://npmjs.org/package/react-native-turbo-db)
+[![Platform](https://img.shields.io/badge/platform-android%20%7C%20ios%20%7C%20web-blue.svg?style=flat-square)](https://npmjs.org/package/react-native-turbo-db)
 [![New Architecture](https://img.shields.io/badge/architecture-TurboModule%20%7C%20JSI-green.svg?style=flat-square)](https://reactnative.dev/docs/the-new-architecture/landing)
 [![Web Support](https://img.shields.io/badge/web-IndexedDB-orange.svg?style=flat-square)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
 
@@ -42,9 +42,9 @@ Most React Native storage solutions rely on the asynchronous bridge (AsyncStorag
 ## 📦 Installation
 
 ```sh
-npm install rn-turbo-db
+npm install react-native-turbo-db
 # or
-yarn add rn-turbo-db
+yarn add react-native-turbo-db
 ```
 
 ### Requirements
@@ -77,7 +77,7 @@ You can also use TurboDB in plain JavaScript projects:
 
 ```html
 <script type="module">
-  import { TurboDB } from 'https://esm.sh/rn-turbo-db';
+  import { TurboDB } from 'https://esm.sh/react-native-turbo-db';
 
   const db = new TurboDB('my_data', 10 * 1024 * 1024);
   db.set('hello', 'world');
@@ -88,11 +88,11 @@ You can also use TurboDB in plain JavaScript projects:
 For Node.js, install and use:
 
 ```bash
-npm install rn-turbo-db
+npm install react-native-turbo-db
 ```
 
 ```javascript
-import { TurboDB } from 'rn-turbo-db';
+import { TurboDB } from 'react-native-turbo-db';
 
 const db = new TurboDB('./data.db');
 db.set('key', 'value');
@@ -105,7 +105,7 @@ db.set('key', 'value');
 Initialize the database. It's recommended to do this once at the app root.
 
 ```typescript
-import { TurboDB } from 'rn-turbo-db';
+import { TurboDB } from 'react-native-turbo-db';
 
 // Get a platform-specific safe path
 const docsDir = TurboDB.getDocumentsDirectory();

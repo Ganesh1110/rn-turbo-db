@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "rn-turbo-db": ["./src/index"]
+      "react-native-turbo-db": ["./src/index"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
