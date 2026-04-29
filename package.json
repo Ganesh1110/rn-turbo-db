@@ -1,7 +1,10 @@
 {
   "name": "react-native-turbo-db",
-  "version": "1.2.0",
-  "description": "High-performance JSI-driven embedded key-value database for React Native with encryption, WAL logging, B+tree indexing, and SSR/isomorphic support. Fast AsyncStorage alternative.",
+  "version": "1.2.1",
+  "description": "react-native-turbo-db is a high-performance JSI database and AsyncStorage alternative for React Native, featuring encrypted storage, WAL persistence, B+tree indexing and offline-first local database support.",
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./lib/module/index.js",
   "exports": {
     ".": {
@@ -55,40 +58,15 @@
   },
   "keywords": [
     "react-native",
-    "jsi",
-    "turbo-module",
-    "database",
-    "secure-database",
-    "encrypted-storage",
-    "key-value-store",
-    "kv-store",
-    "embedded-database",
-    "local-database",
-    "performance",
-    "ssr",
-    "isomorphic",
-    "web",
-    "asyncstorage",
-    "encryption",
-    "crypto",
-    "libsodium",
-    "xchacha20",
-    "keychain",
-    "keystore",
-    "b-tree",
-    "bplustree",
-    "indexed",
-    "mmap",
-    "wal",
-    "write-ahead-log",
     "react-native-storage",
-    "mobile-database",
-    "offline-first",
-    "acid-compliant",
-    "atomic-transactions",
-    "synchronous-storage",
-    "thread-safe",
-    "high-performance"
+    "react-native-database",
+    "asyncstorage-alternative",
+    "mmkv-alternative",
+    "jsi-storage",
+    "encrypted-storage",
+    "offline-database",
+    "key-value-store",
+    "react-native-jsi"
   ],
   "repository": {
     "type": "git",
@@ -100,6 +78,7 @@
     "url": "https://github.com/Ganesh1110/react-native-turbo-db/issues"
   },
   "homepage": "https://github.com/Ganesh1110/react-native-turbo-db#readme",
+  "funding": "https://github.com/sponsors/ganeshjayaprakash",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
@@ -134,8 +113,8 @@
     "typescript": "^6.0.2"
   },
   "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
+    "react": ">=18",
+    "react-native": ">=0.72"
   },
   "packageManager": "yarn@4.11.0",
   "react-native-builder-bob": {
