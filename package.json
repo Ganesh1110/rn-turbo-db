@@ -1,6 +1,6 @@
 {
   "name": "react-native-turbo-db",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance JSI-driven embedded key-value database for React Native with encryption, WAL logging, B+tree indexing, and SSR/isomorphic support. Fast AsyncStorage alternative.",
   "main": "./lib/module/index.js",
   "exports": {
