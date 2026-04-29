@@ -101,6 +101,7 @@ R6 SQL          → Next-Gen Query Engine
 | Regex Search | ❌ Missing | 0/10 | P1 |
 | Import / Export | ⚠️ Web only | 3/10 | P0 |
 | Blob Support (formalize) | ⚠️ Implicit | 5/10 | P0 |
+| Developer CLI Greeting | ❌ Missing | 9/10 | P2 |
 
 ### Key Deliverables
 
@@ -109,6 +110,7 @@ R6 SQL          → Next-Gen Query Engine
 3. **Regex Search** — Optional regex filter for keys (compile-time flag)
 4. **Import/Export** — Native JSON export/import using B+Tree traversal
 5. **Blob Support** — Formal `setBlob()` / `getBlob()` with streaming support
+6. **Developer Greeting** — Display a friendly `[TurboDB] 🔥 Your app is boosted by react-native-turbo-db!` message during Gradle configuration (similar to MMKV/Nitro).
 
 ### Success Criteria
 
@@ -117,6 +119,7 @@ R6 SQL          → Next-Gen Query Engine
 - [ ] Regex search works on keys (e.g., `.*\d{3}$`)
 - [ ] Export produces valid JSON, import restores all data
 - [ ] Blob API supports values > 1MB
+- [ ] Gradle config prints the `🔥 boosted by TurboDB` message to the developer
 
 ---
 
