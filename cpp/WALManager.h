@@ -31,7 +31,8 @@ enum class WALRecordType : uint8_t {
     PAGE_WRITE  = 1,
     COMMIT      = 2,
     CHECKPOINT  = 3,
-    TX_BEGIN    = 4  // NEW: explicit transaction begin marker
+    TX_BEGIN    = 4,  // NEW: explicit transaction begin marker
+    BATCH_WRITE = 5  // NEW: batch multiple page writes in one record
 };
 
 #pragma pack(push, 1)
@@ -59,6 +60,9 @@ public:
     // WALManager does NOT re-encrypt — it only stores what is passed.
     void logPageWrite(uint64_t offset, const std::string& data);
     void logPageWrite(uint64_t offset, const uint8_t* data, size_t length);
+
+    // NEW: Batch multiple page writes into a single WAL record (reduces fsync)
+    void logBatchWrite(const std::vector<std::pair<uint64_t, std::vector<uint8_t>>>& writes);
 
     // Log a commit marker (flushes internally)
     void logCommit();

@@ -45,6 +45,11 @@ public:
     // Storage init
     bool initStorage(const std::string& path, size_t size, bool enableSync = false);
 
+    // ── Transaction API ──
+    bool beginTransaction();
+    bool commitTransaction();
+    bool rollbackTransaction();
+
     // Raw mmap access (legacy)
     void write(size_t offset, const std::string& data);
     std::string read(size_t offset, size_t length);
@@ -163,6 +168,11 @@ private:
     bool sync_enabled_ = false;
     bool needs_repair_ = false;
     std::atomic<uint64_t> logical_clock_{1};
+
+    // ── Transaction state ──
+    bool in_transaction_ = false;
+    std::vector<std::pair<std::string, size_t>> tx_writes_;  // Track key→offset written in tx
+    std::vector<std::string> tx_deletes_;                     // Track keys deleted in tx
 
     bool isTombstone(size_t offset);
 };

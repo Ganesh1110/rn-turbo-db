@@ -132,7 +132,7 @@ uint64_t PersistentBPlusTree::allocate_node(bool is_leaf) {
         
         // Safety check: Don't grow node area into the data record area (starts at 1MB)
         if (offset + node_stride >= 1024 * 1024) {
-            LOGE("PersistentBPlusTree: Out of index space! offset=" PRIu64 ", stride=%zu", offset, node_stride);
+            LOGE("PersistentBPlusTree: Out of index space! offset=%" PRIu64 ", stride=%zu", offset, node_stride);
             throw std::runtime_error("Database index area full (Max 1MB).");
         }
         

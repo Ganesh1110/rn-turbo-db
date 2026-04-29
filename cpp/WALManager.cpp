@@ -93,6 +93,46 @@ void WALManager::logPageWrite(uint64_t offset, const uint8_t* data, size_t lengt
     appendRecord(header, data, length);
 }
 
+// ── Batch Write: Multiple page writes in one WAL record ─────────────────
+void WALManager::logBatchWrite(const std::vector<std::pair<uint64_t, std::vector<uint8_t>>>& writes) {
+    if (writes.empty() || !wal_file_.is_open()) return;
+
+    // Calculate total payload size:
+    //   uint32_t num_ops + for each: uint64_t offset + uint32_t len + payload
+    size_t payload_size = sizeof(uint32_t); // num_ops
+    for (const auto& [offset, data] : writes) {
+        payload_size += sizeof(uint64_t) + sizeof(uint32_t) + data.size();
+    }
+
+    // Build payload
+    std::vector<uint8_t> payload(payload_size);
+    size_t pos = 0;
+
+    // Write number of operations
+    uint32_t num_ops = static_cast<uint32_t>(writes.size());
+    std::memcpy(payload.data() + pos, &num_ops, sizeof(uint32_t));
+    pos += sizeof(uint32_t);
+
+    // Write each operation
+    for (const auto& [offset, data] : writes) {
+        std::memcpy(payload.data() + pos, &offset, sizeof(uint64_t));
+        pos += sizeof(uint64_t);
+        uint32_t len = static_cast<uint32_t>(data.size());
+        std::memcpy(payload.data() + pos, &len, sizeof(uint32_t));
+        pos += sizeof(uint32_t);
+        std::memcpy(payload.data() + pos, data.data(), data.size());
+        pos += data.size();
+    }
+
+    // Write WAL record
+    WALRecordHeader header;
+    header.length   = static_cast<uint32_t>(sizeof(WALRecordHeader) + payload_size);
+    header.type     = WALRecordType::BATCH_WRITE;
+    header.offset   = 0; // Not used for batch
+    header.checksum = calculate_crc32(payload.data(), payload_size);
+    appendRecord(header, payload.data(), payload_size);
+}
+
 void WALManager::logCommit() {
     WALRecordHeader header;
     header.length   = sizeof(WALRecordHeader);
@@ -196,7 +236,7 @@ bool WALManager::recoverSafe(MMapRegion* mmap) {
             tx_start = record_start;
             in_tx = true;
             // No payload for TX_BEGIN
-        } else if (hdr.type == WALRecordType::PAGE_WRITE) {
+        } else if (hdr.type == WALRecordType::PAGE_WRITE || hdr.type == WALRecordType::BATCH_WRITE) {
             if (!in_tx) {
                 // Implicit transaction start (legacy records without TX_BEGIN)
                 tx_start = record_start;
@@ -259,43 +299,86 @@ bool WALManager::recoverSafe(MMapRegion* mmap) {
                 continue;
             }
 
-            if (hdr.type != WALRecordType::PAGE_WRITE) {
-                // Should not happen inside a committed range, but be safe
-                continue;
-            }
+            if (hdr.type == WALRecordType::PAGE_WRITE) {
+                // ... existing single page write handling ...
+                size_t payload_len = 0;
+                if (hdr.length > sizeof(WALRecordHeader)) {
+                    payload_len = hdr.length - sizeof(WALRecordHeader);
+                }
 
-            size_t payload_len = 0;
-            if (hdr.length > sizeof(WALRecordHeader)) {
-                payload_len = hdr.length - sizeof(WALRecordHeader);
-            }
+                if (payload_len == 0) continue;
 
-            if (payload_len == 0) continue;
+                std::vector<uint8_t> payload(payload_len);
+                reader.read(reinterpret_cast<char*>(payload.data()), payload_len);
+                if (static_cast<size_t>(reader.gcount()) != payload_len) {
+                    LOGE("WAL Recovery: short read on PAGE_WRITE payload, skipping");
+                    break;
+                }
 
-            std::vector<uint8_t> payload(payload_len);
-            reader.read(reinterpret_cast<char*>(payload.data()), payload_len);
-            if (static_cast<size_t>(reader.gcount()) != payload_len) {
-                LOGE("WAL Recovery: short read on PAGE_WRITE payload, skipping");
-                break;
-            }
+                // CRC validation
+                uint32_t computed = calculate_crc32(payload.data(), payload_len);
+                if (computed != hdr.checksum) {
+                    LOGE("WAL Recovery: CRC mismatch at offset %llu — skipping",
+                         static_cast<unsigned long long>(hdr.offset));
+                    skipped_crc++;
+                    continue;
+                }
 
-            // CRC validation
-            uint32_t computed = calculate_crc32(payload.data(), payload_len);
-            if (computed != hdr.checksum) {
-                LOGE("WAL Recovery: CRC mismatch at offset %llu — skipping",
-                     static_cast<unsigned long long>(hdr.offset));
-                skipped_crc++;
-                continue;
-            }
+                if (hdr.offset + payload_len <= mmap->getSize()) {
+                    mmap->write(hdr.offset, payload.data(), payload_len);
+                    replayed++;
+                }
+            } else if (hdr.type == WALRecordType::BATCH_WRITE) {
+                // Replay batched writes
+                size_t payload_len = 0;
+                if (hdr.length > sizeof(WALRecordHeader)) {
+                    payload_len = hdr.length - sizeof(WALRecordHeader);
+                }
 
-            // NOTE: payload is already in its final form (encrypted if the DB uses
-            // encryption). Just write it directly — no decryption step needed here,
-            // because WAL stores exactly what was written to the main file.
-            if (hdr.offset + payload_len <= mmap->getSize()) {
-                mmap->write(hdr.offset, payload.data(), payload_len);
-                replayed++;
-            } else {
-                LOGE("WAL Recovery: write offset %llu + %zu exceeds mmap size %zu, skipping",
-                     static_cast<unsigned long long>(hdr.offset), payload_len, mmap->getSize());
+                if (payload_len == 0) continue;
+
+                std::vector<uint8_t> payload(payload_len);
+                reader.read(reinterpret_cast<char*>(payload.data()), payload_len);
+                if (static_cast<size_t>(reader.gcount()) != payload_len) {
+                    LOGE("WAL Recovery: short read on BATCH_WRITE payload, skipping");
+                    break;
+                }
+
+                // CRC validation
+                uint32_t computed = calculate_crc32(payload.data(), payload_len);
+                if (computed != hdr.checksum) {
+                    LOGE("WAL Recovery: CRC mismatch on BATCH_WRITE — skipping");
+                    skipped_crc++;
+                    continue;
+                }
+
+                // Parse batch: num_ops, then for each: offset (uint64) + len (uint32) + data
+                size_t pos = 0;
+                uint32_t num_ops = 0;
+                if (payload_len >= sizeof(uint32_t)) {
+                    std::memcpy(&num_ops, payload.data() + pos, sizeof(uint32_t));
+                    pos += sizeof(uint32_t);
+                }
+
+                for (uint32_t i = 0; i < num_ops; i++) {
+                    if (pos + sizeof(uint64_t) + sizeof(uint32_t) > payload_len) break;
+
+                    uint64_t offset;
+                    std::memcpy(&offset, payload.data() + pos, sizeof(uint64_t));
+                    pos += sizeof(uint64_t);
+
+                    uint32_t len;
+                    std::memcpy(&len, payload.data() + pos, sizeof(uint32_t));
+                    pos += sizeof(uint32_t);
+
+                    if (pos + len > payload_len) break;
+
+                    if (offset + len <= mmap->getSize()) {
+                        mmap->write(offset, payload.data() + pos, len);
+                        replayed++;
+                    }
+                    pos += len;
+                }
             }
         }
     }
