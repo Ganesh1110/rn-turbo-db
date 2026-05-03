@@ -12,6 +12,9 @@ buildscript {
 apply plugin: "com.android.library"
 apply plugin: "com.facebook.react"
 
+// Developer greeting — shown during Gradle configuration phase
+println "\u001B[32m[TurboDB] \uD83D\uDD25 Your app is boosted by react-native-turbo-db!\u001B[0m"
+
 def getExtOrDefault(name) {
     return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["TurboDB_" + name]
 }

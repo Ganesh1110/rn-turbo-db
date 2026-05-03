@@ -486,6 +486,80 @@ facebook::jsi::Value DBEngine::get(
             });
     }
 
+    // ── R3: Data Management APIs ──────────────────────────────────────────────────
+
+    if (propName == "setWithTTLAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 3,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return setWithTTLAsync(rt, args[0]);
+            });
+    }
+
+    if (propName == "cleanupExpiredAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value*, size_t) -> facebook::jsi::Value {
+                return cleanupExpiredAsync(rt);
+            });
+    }
+
+    if (propName == "prefixSearchAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return prefixSearchAsync(rt, args[0]);
+            });
+    }
+
+    if (propName == "regexSearchAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return regexSearchAsync(rt, args[0]);
+            });
+    }
+
+    if (propName == "exportDBAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 0,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value*, size_t) -> facebook::jsi::Value {
+                return exportDBAsync(rt);
+            });
+    }
+
+    if (propName == "importDBAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return importDBAsync(rt, args[0]);
+            });
+    }
+
+    if (propName == "setBlobAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 2,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return setBlobAsync(rt, args[0]);
+            });
+    }
+
+    if (propName == "getBlobAsync") {
+        return facebook::jsi::Function::createFromHostFunction(
+            runtime, name, 1,
+            [this](facebook::jsi::Runtime& rt, const facebook::jsi::Value&,
+                   const facebook::jsi::Value* args, size_t) -> facebook::jsi::Value {
+                return getBlobAsync(rt, args[0]);
+            });
+    }
+
     return facebook::jsi::Value::undefined();
 }
 
@@ -525,6 +599,15 @@ std::vector<facebook::jsi::PropNameID> DBEngine::getPropertyNames(
     result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "setSecureItemAsync"));
     result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "getSecureItemAsync"));
     result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "deleteSecureItemAsync"));
+    // R3: Data Management
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "setWithTTLAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "cleanupExpiredAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "prefixSearchAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "regexSearchAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "exportDBAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "importDBAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "setBlobAsync"));
+    result.push_back(facebook::jsi::PropNameID::forUtf8(runtime, "getBlobAsync"));
     return result;
 }
 
@@ -1334,4 +1417,440 @@ std::shared_ptr<DBEngine> getDBEngine() {
     return g_engine;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R3: Data Management Features
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Helper: base64 encode/decode for Blob API ────────────────────────────────
+static const std::string B64_CHARS =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string base64_encode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t val = (uint32_t)data[i] << 16;
+        if (i + 1 < len) val |= (uint32_t)data[i + 1] << 8;
+        if (i + 2 < len) val |= (uint32_t)data[i + 2];
+        out += B64_CHARS[(val >> 18) & 0x3F];
+        out += B64_CHARS[(val >> 12) & 0x3F];
+        out += (i + 1 < len) ? B64_CHARS[(val >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? B64_CHARS[(val)      & 0x3F] : '=';
+    }
+    return out;
+}
+
+static std::vector<uint8_t> base64_decode(const std::string& s) {
+    std::vector<uint8_t> out;
+    if (s.size() % 4 != 0) return out;
+    auto decode_char = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); i += 4) {
+        int v0 = decode_char(s[i]),     v1 = decode_char(s[i+1]);
+        int v2 = decode_char(s[i+2]),   v3 = decode_char(s[i+3]);
+        if (v0 < 0 || v1 < 0) break;
+        out.push_back((uint8_t)((v0 << 2) | (v1 >> 4)));
+        if (s[i+2] != '=' && v2 >= 0) out.push_back((uint8_t)((v1 << 4) | (v2 >> 2)));
+        if (s[i+3] != '=' && v3 >= 0) out.push_back((uint8_t)((v2 << 6) | v3));
+    }
+    return out;
+}
+
+// ── Native TTL ───────────────────────────────────────────────────────────────
+// Strategy: sidecar key "__ttl:<user_key>" stores a uint64 expiry timestamp (ms).
+// On setWithTTL: write the user value + write the sidecar TTL key.
+// findRec() does NOT check TTL (hot path unaffected); TTL is checked lazily at JS layer
+// or eagerly via cleanupExpiredAsync().
+
+facebook::jsi::Value DBEngine::setWithTTLAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isObject()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "setWithTTLAsync: expected {key, value, ttlMs}"));
+        });
+    }
+    auto obj = args.asObject(rt);
+    std::string key = obj.getProperty(rt, "key").asString(rt).utf8(rt);
+    double ttlMs    = obj.getProperty(rt, "ttlMs").asNumber();
+    auto valueJsi   = obj.getProperty(rt, "value");
+
+    // Serialize value bytes on JS thread
+    arena_.reset();
+    BinarySerializer::serialize(rt, valueJsi, arena_);
+    std::vector<uint8_t> bytes(arena_.data(), arena_.data() + arena_.size());
+
+    // Compute expiry (absolute ms since epoch)
+    uint64_t expiry_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count()
+        + static_cast<int64_t>(ttlMs));
+
+    return createPromise(rt, [this, key, bytes, expiry_ms](auto& rt2, auto resolve, auto reject) {
+        bool ok = false;
+        try {
+            std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+            // 1. Write the user value
+            ok = insertRecBytes(key, bytes, true, false);
+            if (ok) {
+                // 2. Write TTL sidecar: "__ttl:<key>" → little-endian uint64
+                std::string ttl_key = std::string(TTL_PREFIX) + key;
+                std::vector<uint8_t> ttl_bytes(sizeof(uint64_t));
+                std::memcpy(ttl_bytes.data(), &expiry_ms, sizeof(uint64_t));
+                insertRecBytes(ttl_key, ttl_bytes, true, false);
+            }
+        } catch (...) { ok = false; }
+        resolve->call(rt2, facebook::jsi::Value(ok));
+    });
+}
+
+facebook::jsi::Value DBEngine::cleanupExpiredAsync(facebook::jsi::Runtime& rt) {
+    return createPromise(rt, [this](auto& rt2, auto resolve, auto) {
+        uint64_t now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
+        int cleaned = 0;
+        try {
+            // Find all TTL sidecar keys
+            std::vector<std::string> all_keys;
+            {
+                std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+                all_keys = btree_ ? btree_->getAllKeys() : std::vector<std::string>();
+            }
+            std::string ttl_prefix = std::string(TTL_PREFIX);
+            for (const auto& k : all_keys) {
+                if (k.compare(0, ttl_prefix.size(), ttl_prefix) != 0) continue;
+                // This is a sidecar key
+                std::string user_key = k.substr(ttl_prefix.size());
+                // Read expiry
+                size_t sidecar_offset;
+                {
+                    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+                    sidecar_offset = btree_ ? btree_->find(k) : 0;
+                }
+                if (sidecar_offset == 0) continue;
+
+                const uint8_t* len_ptr = mmap_->get_address(sidecar_offset);
+                if (!len_ptr) continue;
+                uint32_t stored_len;
+                std::memcpy(&stored_len, len_ptr, sizeof(uint32_t));
+                if (stored_len < sizeof(uint64_t)) continue;
+
+                const uint8_t* payload_ptr = mmap_->get_address(sidecar_offset + sizeof(uint32_t));
+                if (!payload_ptr) continue;
+
+                // Decrypt if needed
+                std::vector<uint8_t> plain;
+                const uint8_t* data_ptr = payload_ptr;
+                size_t data_len = stored_len;
+                if (crypto_) {
+                    try {
+                        plain = crypto_->decrypt(payload_ptr, stored_len);
+                        if (plain.size() < sizeof(uint64_t)) continue;
+                        data_ptr = plain.data();
+                        data_len = plain.size();
+                    } catch (...) { continue; }
+                }
+                if (data_len < sizeof(uint64_t)) continue;
+
+                uint64_t expiry_ms;
+                std::memcpy(&expiry_ms, data_ptr, sizeof(uint64_t));
+
+                if (now_ms > expiry_ms) {
+                    // Expired: remove both user key and sidecar
+                    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+                    remove(user_key);
+                    remove(k);
+                    value_cache_.remove(user_key);
+                    cleaned++;
+                }
+            }
+        } catch (...) {}
+        resolve->call(rt2, facebook::jsi::Value(static_cast<double>(cleaned)));
+    });
+}
+
+// ── Native Prefix Search ─────────────────────────────────────────────────────
+facebook::jsi::Value DBEngine::prefixSearchAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isString()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "prefixSearchAsync: expected string prefix"));
+        });
+    }
+    std::string prefix = args.asString(rt).utf8(rt);
+
+    return createPromise(rt, [this, prefix](auto& rt2, auto resolve, auto) {
+        std::vector<std::pair<std::string, size_t>> pairs;
+        {
+            std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+            if (btree_) {
+                pairs = btree_->prefixSearch(prefix);
+            }
+        }
+        // Filter out internal/tombstoned/TTL sidecar keys
+        std::string ttl_pref = std::string(TTL_PREFIX);
+        facebook::jsi::Array result(rt2, 0);
+        size_t idx = 0;
+        for (auto& p : pairs) {
+            if (p.second == 0) continue; // tombstone
+            if (p.first.compare(0, ttl_pref.size(), ttl_pref) == 0) continue; // TTL sidecar
+            auto val = findRec(rt2, p.first);
+            facebook::jsi::Object item(rt2);
+            item.setProperty(rt2, "key", facebook::jsi::String::createFromUtf8(rt2, p.first));
+            item.setProperty(rt2, "value", std::move(val));
+            result.setValueAtIndex(rt2, idx++, item);
+        }
+        // Resize is not available, so rebuild properly sized array
+        facebook::jsi::Array final_result(rt2, idx);
+        // Redo: collect into vector then build
+        std::vector<std::pair<std::string, facebook::jsi::Value>> items;
+        items.reserve(pairs.size());
+        for (auto& p : pairs) {
+            if (p.second == 0) continue;
+            if (p.first.compare(0, ttl_pref.size(), ttl_pref) == 0) continue;
+            items.push_back({p.first, findRec(rt2, p.first)});
+        }
+        facebook::jsi::Array out(rt2, items.size());
+        for (size_t i = 0; i < items.size(); i++) {
+            facebook::jsi::Object item(rt2);
+            item.setProperty(rt2, "key", facebook::jsi::String::createFromUtf8(rt2, items[i].first));
+            item.setProperty(rt2, "value", std::move(items[i].second));
+            out.setValueAtIndex(rt2, i, item);
+        }
+        resolve->call(rt2, std::move(out));
+    });
+}
+
+// ── Regex Search (keys only) ─────────────────────────────────────────────────
+facebook::jsi::Value DBEngine::regexSearchAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isString()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "regexSearchAsync: expected string pattern"));
+        });
+    }
+    std::string pattern = args.asString(rt).utf8(rt);
+
+    // Validate regex before dispatching
+    try {
+        std::regex test_re(pattern);
+        (void)test_re;
+    } catch (const std::regex_error& e) {
+        std::string err_msg = std::string("regexSearchAsync: invalid regex — ") + e.what();
+        return createPromise(rt, [err_msg](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromUtf8(rt2, err_msg));
+        });
+    }
+
+    return createPromise(rt, [this, pattern](auto& rt2, auto resolve, auto reject) {
+        try {
+            std::regex re(pattern);
+            std::vector<std::string> all_keys;
+            {
+                std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+                all_keys = btree_ ? btree_->getAllKeys() : std::vector<std::string>();
+            }
+            std::string ttl_pref = std::string(TTL_PREFIX);
+            std::vector<std::pair<std::string, facebook::jsi::Value>> items;
+            for (const auto& key : all_keys) {
+                if (key.empty() || key[0] == '_') continue; // skip internal keys
+                if (key.compare(0, ttl_pref.size(), ttl_pref) == 0) continue;
+                if (std::regex_search(key, re)) {
+                    auto val = findRec(rt2, key);
+                    if (!val.isUndefined()) {
+                        items.push_back({key, std::move(val)});
+                    }
+                }
+            }
+            facebook::jsi::Array out(rt2, items.size());
+            for (size_t i = 0; i < items.size(); i++) {
+                facebook::jsi::Object item(rt2);
+                item.setProperty(rt2, "key", facebook::jsi::String::createFromUtf8(rt2, items[i].first));
+                item.setProperty(rt2, "value", std::move(items[i].second));
+                out.setValueAtIndex(rt2, i, item);
+            }
+            resolve->call(rt2, std::move(out));
+        } catch (...) {
+            reject->call(rt2, facebook::jsi::String::createFromAscii(rt2, "regexSearchAsync: internal error"));
+        }
+    });
+}
+
+// ── Export / Import ──────────────────────────────────────────────────────────
+facebook::jsi::Value DBEngine::exportDBAsync(facebook::jsi::Runtime& rt) {
+    return createPromise(rt, [this](auto& rt2, auto resolve, auto) {
+        std::vector<std::string> all_keys;
+        {
+            std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+            all_keys = btree_ ? btree_->getAllKeys() : std::vector<std::string>();
+        }
+        std::string ttl_pref = std::string(TTL_PREFIX);
+        facebook::jsi::Object result(rt2);
+        for (const auto& key : all_keys) {
+            if (key.empty() || key.rfind("__", 0) == 0) continue; // skip internal keys
+            if (key.compare(0, ttl_pref.size(), ttl_pref) == 0) continue;
+            auto val = findRec(rt2, key);
+            if (!val.isUndefined()) {
+                result.setProperty(rt2, key.c_str(), std::move(val));
+            }
+        }
+        resolve->call(rt2, std::move(result));
+    });
+}
+
+facebook::jsi::Value DBEngine::importDBAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isObject()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "importDBAsync: expected object {key: value, ...}"));
+        });
+    }
+    // Serialize all values on JS thread
+    auto obj = args.asObject(rt);
+    auto propNames = obj.getPropertyNames(rt);
+    size_t len = propNames.size(rt);
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> batch;
+    batch.reserve(len);
+    for (size_t i = 0; i < len; i++) {
+        auto propName = propNames.getValueAtIndex(rt, i).asString(rt).utf8(rt);
+        auto val = obj.getProperty(rt, propName.c_str());
+        arena_.reset();
+        BinarySerializer::serialize(rt, val, arena_);
+        batch.push_back({propName, std::vector<uint8_t>(arena_.data(), arena_.data() + arena_.size())});
+    }
+
+    return createPromise(rt, [this, batch = std::move(batch)](auto& rt2, auto resolve, auto) mutable {
+        int imported = 0;
+        try {
+            std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+            for (auto& [key, bytes] : batch) {
+                if (insertRecBytes(key, bytes, false, false)) imported++;
+            }
+            if (pbtree_) pbtree_->checkpoint();
+        } catch (...) {}
+        resolve->call(rt2, facebook::jsi::Value(static_cast<double>(imported)));
+    });
+}
+
+// ── Blob Support ─────────────────────────────────────────────────────────────
+// Blobs are stored as raw bytes with a special 1-byte prefix tag (0xBB = blob marker)
+// to differentiate from BinarySerializer-encoded values.
+// JS passes blobs as base64 strings; native stores raw bytes.
+
+static constexpr uint8_t BLOB_TAG = 0xBB;
+
+facebook::jsi::Value DBEngine::setBlobAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isObject()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "setBlobAsync: expected {key, data} where data is base64 string"));
+        });
+    }
+    auto obj = args.asObject(rt);
+    std::string key     = obj.getProperty(rt, "key").asString(rt).utf8(rt);
+    std::string b64data = obj.getProperty(rt, "data").asString(rt).utf8(rt);
+
+    // Decode base64 on JS thread
+    auto raw = base64_decode(b64data);
+
+    // Prepend BLOB_TAG so getBlobAsync can identify blob records
+    std::vector<uint8_t> bytes;
+    bytes.reserve(1 + raw.size());
+    bytes.push_back(BLOB_TAG);
+    bytes.insert(bytes.end(), raw.begin(), raw.end());
+
+    return createPromise(rt, [this, key, bytes = std::move(bytes)](auto& rt2, auto resolve, auto reject) mutable {
+        bool ok = false;
+        try {
+            std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+            ok = insertRecBytes(key, bytes, true, false);
+        } catch (...) {}
+        resolve->call(rt2, facebook::jsi::Value(ok));
+    });
+}
+
+facebook::jsi::Value DBEngine::getBlobAsync(
+    facebook::jsi::Runtime& rt,
+    const facebook::jsi::Value& args)
+{
+    if (!args.isString()) {
+        return createPromise(rt, [](auto& rt2, auto, auto rej) {
+            rej->call(rt2, facebook::jsi::String::createFromAscii(rt2,
+                "getBlobAsync: expected string key"));
+        });
+    }
+    std::string key = args.asString(rt).utf8(rt);
+
+    return createPromise(rt, [this, key](auto& rt2, auto resolve, auto) {
+        try {
+            std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+            if (!btree_ || !mmap_) {
+                resolve->call(rt2, facebook::jsi::Value::null());
+                return;
+            }
+            size_t offset = btree_->find(key);
+            if (offset == 0) {
+                resolve->call(rt2, facebook::jsi::Value::null());
+                return;
+            }
+            const uint8_t* len_ptr = mmap_->get_address(offset);
+            if (!len_ptr) { resolve->call(rt2, facebook::jsi::Value::null()); return; }
+
+            uint32_t stored_len;
+            std::memcpy(&stored_len, len_ptr, sizeof(uint32_t));
+            if (stored_len == 0) { resolve->call(rt2, facebook::jsi::Value::null()); return; }
+
+            const uint8_t* payload_ptr = mmap_->get_address(offset + sizeof(uint32_t));
+            if (!payload_ptr) { resolve->call(rt2, facebook::jsi::Value::null()); return; }
+
+            // Decrypt if needed
+            std::vector<uint8_t> plain;
+            const uint8_t* data_ptr = payload_ptr;
+            size_t data_len = stored_len;
+            if (crypto_) {
+                try {
+                    plain = crypto_->decrypt(payload_ptr, stored_len);
+                    data_ptr = plain.data();
+                    data_len = plain.size();
+                } catch (...) { resolve->call(rt2, facebook::jsi::Value::null()); return; }
+            }
+
+            // Check BLOB_TAG
+            if (data_len < 1 || data_ptr[0] != BLOB_TAG) {
+                resolve->call(rt2, facebook::jsi::Value::null());
+                return;
+            }
+
+            // Encode raw bytes (skip tag byte) back to base64
+            std::string b64 = base64_encode(data_ptr + 1, data_len - 1);
+            resolve->call(rt2, facebook::jsi::String::createFromUtf8(rt2, b64));
+        } catch (...) {
+            resolve->call(rt2, facebook::jsi::Value::null());
+        }
+    });
+}
+
 } // namespace turbo_db
+

@@ -282,6 +282,41 @@ export class TurboDB {
     );
   }
 
+  /**
+   * Async version of setWithTTL — stores TTL sidecar alongside the value.
+   */
+  async setWithTTLAsync(
+    key: string,
+    value: any,
+    ttlMs: number,
+    options: SetOptions = {}
+  ): Promise<boolean> {
+    await this.ensureInitialized();
+    return this.setWithTTL(key, value, ttlMs, options);
+  }
+
+  /**
+   * Scan all keys and remove expired TTL entries.
+   * Returns number of records cleaned.
+   */
+  async cleanupExpiredAsync(): Promise<number> {
+    await this.ensureInitialized();
+    const keys = Array.from(this.storage.keys());
+    let cleaned = 0;
+    const now = Date.now();
+    for (const key of keys) {
+      const val = this.storage.get(key);
+      if (val && typeof val === 'object' && '__ttl_expiry' in val) {
+        if (now > val.__ttl_expiry) {
+          this.storage.delete(key);
+          this.scheduleSave();
+          cleaned++;
+        }
+      }
+    }
+    return cleaned;
+  }
+
   remove(key: string): boolean {
     if (IS_SERVER) return false;
     const res = this.storage.delete(key);
@@ -452,6 +487,23 @@ export class TurboDB {
     return this.rangeQueryAsync(prefix, prefix + '\uffff');
   }
 
+  /**
+   * Search keys matching a regex pattern (JS-side regex, web parity).
+   */
+  async regexSearchAsync(pattern: string): Promise<RangeQueryResult[]> {
+    await this.ensureInitialized();
+    const re = new RegExp(pattern);
+    const results: RangeQueryResult[] = [];
+    for (const [key] of this.storage.entries()) {
+      if (key.startsWith('__')) continue;
+      if (re.test(key)) {
+        const resolved = this.get(key);
+        if (resolved !== undefined) results.push({ key, value: resolved });
+      }
+    }
+    return results;
+  }
+
   async query(options: {
     prefix?: string;
     filter?: (value: any) => boolean;
@@ -573,8 +625,40 @@ export class TurboDB {
     return res;
   }
 
-  async import(data: Record<string, any>): Promise<void> {
+  async import(data: Record<string, any>): Promise<number> {
     await this.setMultiAsync(data);
+    return Object.keys(data).length;
+  }
+
+  /**
+   * Store a binary blob. On web, stores the base64 string or Uint8Array as-is in IndexedDB.
+   */
+  async setBlobAsync(
+    key: string,
+    data: string | Uint8Array,
+    options: SetOptions = {}
+  ): Promise<boolean> {
+    await this.ensureInitialized();
+    let b64: string;
+    if (typeof data === 'string') {
+      b64 = data;
+    } else {
+      let binary = '';
+      for (let i = 0; i < data.length; i++)
+        binary += String.fromCharCode(data[i]!);
+      b64 = btoa(binary);
+    }
+    return this.set(`__blob:${key}`, { __blob: true, data: b64 }, options);
+  }
+
+  /**
+   * Retrieve a blob as a base64 string.
+   */
+  async getBlobAsync(key: string): Promise<string | null> {
+    await this.ensureInitialized();
+    const val = this.storage.get(`__blob:${key}`);
+    if (!val || typeof val !== 'object' || !val.__blob) return null;
+    return val.data as string;
   }
 
   getMetrics(): any {

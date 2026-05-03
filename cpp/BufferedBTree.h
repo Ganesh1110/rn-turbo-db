@@ -41,6 +41,12 @@ public:
     // Range query across buffer and disk tree
     std::vector<std::pair<std::string, size_t>> range(const std::string& start_key, const std::string& end_key);
 
+    /**
+     * True native prefix scan — merges in-buffer keys with disk B+Tree prefix results.
+     * More efficient than range(prefix, prefix+'\uffff') for large datasets.
+     */
+    std::vector<std::pair<std::string, size_t>> prefixSearch(const std::string& prefix);
+
 private:
     void worker_thread();
 

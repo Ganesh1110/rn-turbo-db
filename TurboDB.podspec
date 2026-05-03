@@ -2,6 +2,9 @@ require "json"
 
 package = JSON.parse(File.read(File.join(__dir__, "package.json")))
 
+# Developer greeting — shown during pod install
+puts "\e[32m[TurboDB] \u{1F525} Your app is boosted by react-native-turbo-db!\e[0m"
+
 Pod::Spec.new do |s|
   s.name         = "TurboDB"
   s.version      = package["version"]

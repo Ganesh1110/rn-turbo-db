@@ -155,6 +155,17 @@ public:
     std::vector<std::pair<std::string, size_t>> range(
         const std::string& start_key, const std::string& end_key);
 
+    /**
+     * True prefix scan — walks B+Tree leaves starting at the prefix boundary
+     * and stops at the first key that does not start with the prefix.
+     * O(P + M) where P = tree height and M = number of matching keys.
+     * Significantly faster than the range hack for large datasets.
+     */
+    std::vector<std::pair<std::string, size_t>> prefixSearchWithOffsets(
+        const std::string& prefix);
+
+    std::vector<std::string> prefixSearch(const std::string& prefix);
+
     std::vector<std::string> getAllKeys();
 
     /**
@@ -209,6 +220,14 @@ private:
     void traverseInOrder(uint64_t node_off,
                          int& skip_remaining, int& collect_remaining,
                          std::vector<std::string>& out);
+
+    // Internal helper: find the leftmost leaf offset for prefix scans
+    uint64_t findPrefixLeaf(const std::string& prefix);
+
+    // Internal helper: collect all matching keys from a leaf subtree
+    void collectPrefixLeaves(uint64_t node_off,
+                             const std::string& prefix,
+                             std::vector<std::pair<std::string, size_t>>& out);
 };
 
 } // namespace turbo_db

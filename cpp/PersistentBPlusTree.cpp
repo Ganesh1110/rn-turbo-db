@@ -479,4 +479,107 @@ void PersistentBPlusTree::prefetchLeaves(const std::string& start_key, size_t co
     findAndPrefetch(header_.root_offset, prefetched);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// True Prefix Search
+// Navigates to the first leaf node whose key >= prefix, then linearly scans
+// forward collecting all keys that startWith(prefix), stopping at the first
+// key that does not match. This is O(P + M) where P = tree height, M = matches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+uint64_t PersistentBPlusTree::findPrefixLeaf(const std::string& prefix) {
+    uint64_t curr_off = header_.root_offset;
+    while (true) {
+        BTreeNode node = read_node(curr_off);
+        if (node.is_leaf) return curr_off;
+        // Navigate to the child pointer just before the first key >= prefix
+        uint32_t i = 0;
+        while (i < node.num_keys && prefix > std::string(node.keys[i])) {
+            i++;
+        }
+        curr_off = node.children[i];
+        if (curr_off == 0) return 0;
+    }
+}
+
+void PersistentBPlusTree::collectPrefixLeaves(
+    uint64_t node_off,
+    const std::string& prefix,
+    std::vector<std::pair<std::string, size_t>>& out)
+{
+    if (node_off == 0) return;
+    BTreeNode node = read_node(node_off);
+
+    for (uint32_t i = 0; i < node.num_keys; i++) {
+        std::string key(node.keys[i]);
+        if (key.empty()) continue;
+        // Stop as soon as we pass the prefix boundary
+        if (key.substr(0, prefix.size()) != prefix) return;
+        if (!node.is_leaf) {
+            // Visit child subtrees for internal nodes
+            collectPrefixLeaves(node.children[i], prefix, out);
+        }
+        out.emplace_back(key, static_cast<size_t>(node.values[i]));
+    }
+    // Visit the rightmost child
+    if (!node.is_leaf && node.num_keys > 0) {
+        collectPrefixLeaves(node.children[node.num_keys], prefix, out);
+    }
+}
+
+std::vector<std::pair<std::string, size_t>> PersistentBPlusTree::prefixSearchWithOffsets(
+    const std::string& prefix)
+{
+    std::shared_lock lock(tree_mutex_);
+    std::vector<std::pair<std::string, size_t>> results;
+    if (header_.root_offset == 0 || prefix.empty()) return results;
+
+    // For a true prefix scan we do a full in-order traversal but prune early.
+    // This correctly handles internal nodes by using the recursive collector.
+    std::function<void(uint64_t)> traverse = [&](uint64_t node_off) {
+        if (node_off == 0) return;
+        BTreeNode node = read_node(node_off);
+
+        for (uint32_t i = 0; i <= node.num_keys; i++) {
+            // Visit left subtree first (in-order)
+            if (!node.is_leaf && i < node.num_keys + 1) {
+                // Only descend into subtrees that can possibly contain prefix matches
+                if (i < node.num_keys) {
+                    std::string pivot(node.keys[i]);
+                    // The i-th child contains keys < node.keys[i].
+                    // Skip this subtree entirely if the pivot is < prefix (nothing inside can match).
+                    if (pivot >= prefix) {
+                        traverse(node.children[i]);
+                    } else if (i == 0) {
+                        traverse(node.children[i]);
+                    }
+                } else {
+                    // Rightmost child
+                    traverse(node.children[i]);
+                }
+            }
+            if (i < node.num_keys) {
+                std::string key(node.keys[i]);
+                if (key.empty()) continue;
+                // Early exit: once keys exceed prefix range, stop
+                if (key >= prefix + '\xff') return;
+                if (key.compare(0, prefix.size(), prefix) == 0) {
+                    results.emplace_back(key, static_cast<size_t>(node.values[i]));
+                }
+            }
+        }
+    };
+
+    traverse(header_.root_offset);
+    return results;
+}
+
+std::vector<std::string> PersistentBPlusTree::prefixSearch(const std::string& prefix) {
+    auto pairs = prefixSearchWithOffsets(prefix);
+    std::vector<std::string> keys;
+    keys.reserve(pairs.size());
+    for (auto& p : pairs) keys.push_back(p.first);
+    return keys;
+}
+
 } // namespace turbo_db
+

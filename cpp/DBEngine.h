@@ -7,6 +7,7 @@
 #include <chrono>
 #include <string>
 #include <iostream>
+#include <regex>
 #include "MMapRegion.h"
 #include "PersistentBPlusTree.h"
 #include "BufferedBTree.h"
@@ -84,6 +85,33 @@ public:
                                          const facebook::jsi::Value& args);
     facebook::jsi::Value getAllKeysAsync(facebook::jsi::Runtime& runtime);
     facebook::jsi::Value removeAsync(facebook::jsi::Runtime& runtime,
+                                      const facebook::jsi::Value& args);
+
+    // ── R3: Data Management Features ──
+    // Native TTL — sidecar key pattern: "__ttl:<user_key>" → uint64_t expiry ms
+    static constexpr const char* TTL_PREFIX = "__ttl:";
+
+    facebook::jsi::Value setWithTTLAsync(facebook::jsi::Runtime& runtime,
+                                         const facebook::jsi::Value& args);
+    facebook::jsi::Value cleanupExpiredAsync(facebook::jsi::Runtime& runtime);
+
+    // Native Prefix Search
+    facebook::jsi::Value prefixSearchAsync(facebook::jsi::Runtime& runtime,
+                                           const facebook::jsi::Value& args);
+
+    // Regex Search (keys only, std::regex)
+    facebook::jsi::Value regexSearchAsync(facebook::jsi::Runtime& runtime,
+                                          const facebook::jsi::Value& args);
+
+    // Import / Export
+    facebook::jsi::Value exportDBAsync(facebook::jsi::Runtime& runtime);
+    facebook::jsi::Value importDBAsync(facebook::jsi::Runtime& runtime,
+                                       const facebook::jsi::Value& args);
+
+    // Blob Support (base64 encode/decode bridging)
+    facebook::jsi::Value setBlobAsync(facebook::jsi::Runtime& runtime,
+                                      const facebook::jsi::Value& args);
+    facebook::jsi::Value getBlobAsync(facebook::jsi::Runtime& runtime,
                                       const facebook::jsi::Value& args);
 
     // ── Sync Engine API ──

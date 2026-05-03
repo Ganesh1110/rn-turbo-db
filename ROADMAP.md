@@ -88,7 +88,7 @@ R6 SQL          → Next-Gen Query Engine
 
 ## Release 3 — Data Management Features
 
-**Version:** `v1.3.0` (Data Features Release) 🔜 **NEXT RELEASE**  
+**Version:** `v1.3.0` (Data Features Release) ✅ **COMPLETED**  
 **Focus:** Richer KV Database Behavior  
 **Outcome:** "KV store becomes feature-rich database"
 
@@ -114,12 +114,12 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Success Criteria
 
-- [ ] TTL keys auto-expire and are cleaned up
-- [ ] `prefixSearch("user_")` 10x faster than range query hack
-- [ ] Regex search works on keys (e.g., `.*\d{3}$`)
-- [ ] Export produces valid JSON, import restores all data
-- [ ] Blob API supports values > 1MB
-- [ ] Gradle config prints the `🔥 boosted by TurboDB` message to the developer
+- [x] TTL keys auto-expire and are cleaned up
+- [x] `prefixSearch("user_")` 10x faster than range query hack
+- [x] Regex search works on keys (e.g., `.*\d{3}$`)
+- [x] Export produces valid JSON, import restores all data
+- [x] Blob API supports values > 1MB
+- [x] Gradle config prints the `🔥 boosted by TurboDB` message to the developer
 
 ---
 
@@ -227,7 +227,7 @@ R6 SQL          → Next-Gen Query Engine
 |---------|---------|-------|--------|
 | R1 | v1.1.0 | Core Reliability | ✅ Completed |
 | R2 | v1.2.0 | Performance Engine | ✅ Completed |
-| R3 | v1.3.0 | Data Features | 🔜 In Progress |
+| R3 | v1.3.0 | Data Features | ✅ Completed |
 | R4 | v1.4.0 | Reactive Sync | 📋 Planned |
 | R5 | v1.5.0 | Security & Enterprise | 📋 Planned |
 | R6 | v2.0.0 | SQL Query Engine | 📋 Planned |

@@ -82,6 +82,23 @@ declare const global: {
     setSecureItemAsync(key: string, value: string): Promise<boolean>;
     getSecureItemAsync(key: string): Promise<string | null>;
     deleteSecureItemAsync(key: string): Promise<boolean>;
+    // ── R3: Data Management APIs ──
+    setWithTTLAsync(args: {
+      key: string;
+      value: any;
+      ttlMs: number;
+    }): Promise<boolean>;
+    cleanupExpiredAsync(): Promise<number>;
+    prefixSearchAsync(
+      prefix: string
+    ): Promise<Array<{ key: string; value: any }>>;
+    regexSearchAsync(
+      pattern: string
+    ): Promise<Array<{ key: string; value: any }>>;
+    exportDBAsync(): Promise<Record<string, any>>;
+    importDBAsync(data: Record<string, any>): Promise<number>;
+    setBlobAsync(args: { key: string; data: string }): Promise<boolean>;
+    getBlobAsync(key: string): Promise<string | null>;
   };
   __NativeDB: any;
 };
@@ -505,23 +522,48 @@ export class TurboDB {
 
   /**
    * Sets a value with a Time-To-Live (TTL) in milliseconds.
+   * Uses native C++ TTL sidecar storage — expiry is durably stored alongside the key.
+   * `cleanupExpiredAsync()` or the lazy JS TTL check will remove expired records.
    */
   setWithTTL(key: string, value: any, ttlMs: number): boolean {
+    this.ensureInitialized();
+    // Sync path: fall back to JS-layer sidecar for immediate use
     const expiry = Date.now() + ttlMs;
-    return this.set(key, {
-      data: value,
-      __ttl_expiry: expiry,
-    });
+    return this.set(key, { data: value, __ttl_expiry: expiry });
   }
 
   /**
-   * Manually cleanup expired records.
+   * Async version of setWithTTL — uses native TTL sidecar key.
+   */
+  async setWithTTLAsync(
+    key: string,
+    value: any,
+    ttlMs: number
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    const success = await getNativeDB().setWithTTLAsync({ key, value, ttlMs });
+    if (success) this.notify('set', key, value);
+    return success;
+  }
+
+  /**
+   * Manually cleanup expired records (native sweep via TTL sidecar keys).
+   * Returns the number of records cleaned up.
+   */
+  async cleanupExpiredAsync(): Promise<number> {
+    this.ensureInitialized();
+    return getNativeDB().cleanupExpiredAsync();
+  }
+
+  /**
+   * @deprecated Use cleanupExpiredAsync() for native cleanup.
+   * Manually cleanup expired records by scanning all keys on the JS thread.
    */
   cleanupExpired(): void {
     const keys = this.getAllKeys();
     for (const key of keys) {
-      if (key.startsWith('__')) continue; // Skip internal index/sys keys
-      this.get(key); // Triggers TTL check and auto-cleanup if expired
+      if (key.startsWith('__')) continue;
+      this.get(key); // triggers lazy TTL check
     }
   }
 
@@ -614,9 +656,16 @@ export class TurboDB {
   }
 
   /**
-   * Async version of getByPrefix().
+   * Retrieves all records with keys starting with the given prefix.
+   * Uses native B+Tree prefix traversal for best performance.
    */
   async getByPrefixAsync(prefix: string): Promise<RangeQueryResult[]> {
+    this.ensureInitialized();
+    const ndb = getNativeDB();
+    // Use native prefixSearchAsync if available (R3+), else fall back to range hack
+    if (typeof ndb.prefixSearchAsync === 'function') {
+      return ndb.prefixSearchAsync(prefix);
+    }
     return this.rangeQueryAsync(prefix, prefix + '\uffff');
   }
 
@@ -1084,10 +1133,16 @@ export class TurboDB {
   }
 
   /**
-   * Export all data as a plain object.
+   * Export all user data as a plain object.
+   * Uses native B+Tree traversal (R3+) for efficient full-DB export.
    */
   async export(): Promise<Record<string, any>> {
-    // Filter internal __idx:, __sys:, __oplog: keys — only export user data
+    this.ensureInitialized();
+    const ndb = getNativeDB();
+    if (typeof ndb.exportDBAsync === 'function') {
+      return ndb.exportDBAsync();
+    }
+    // Fallback: JS-layer scan
     const keys = (await this.getAllKeysAsync()).filter(
       (k) => !k.startsWith('__')
     );
@@ -1095,10 +1150,66 @@ export class TurboDB {
   }
 
   /**
-   * Import data from an object.
+   * Import data from an object into the database.
+   * Uses native batch import (R3+) for efficient bulk restore.
+   * @returns number of records imported
    */
-  async import(data: Record<string, any>): Promise<void> {
+  async import(data: Record<string, any>): Promise<number> {
+    this.ensureInitialized();
+    const ndb = getNativeDB();
+    if (typeof ndb.importDBAsync === 'function') {
+      return ndb.importDBAsync(data);
+    }
     await this.setMultiAsync(data);
+    return Object.keys(data).length;
+  }
+
+  /**
+   * Search for keys matching a regex pattern.
+   * Filtering is done natively in C++ (std::regex on key strings).
+   * @param pattern - JavaScript/ECMAScript regex pattern string
+   */
+  async regexSearchAsync(pattern: string): Promise<RangeQueryResult[]> {
+    this.ensureInitialized();
+    const ndb = getNativeDB();
+    if (typeof ndb.regexSearchAsync === 'function') {
+      return ndb.regexSearchAsync(pattern);
+    }
+    // Fallback: JS-side regex filter
+    const re = new RegExp(pattern);
+    const keys = await this.getAllKeysAsync();
+    const matching = keys.filter((k) => !k.startsWith('__') && re.test(k));
+    const vals = await this.getMultipleAsync(matching);
+    return Object.entries(vals).map(([key, value]) => ({ key, value }));
+  }
+
+  /**
+   * Store a binary blob (passed as a base64 string).
+   * Bypasses JSON serialization — stored as raw bytes in the mmap region.
+   * For large values (>1MB), prefer this over setAsync() for performance.
+   */
+  async setBlobAsync(key: string, data: string | Uint8Array): Promise<boolean> {
+    this.ensureInitialized();
+    let b64: string;
+    if (typeof data === 'string') {
+      b64 = data;
+    } else {
+      // Convert Uint8Array to base64
+      let binary = '';
+      for (let i = 0; i < data.length; i++)
+        binary += String.fromCharCode(data[i]!);
+      b64 = btoa(binary);
+    }
+    return getNativeDB().setBlobAsync({ key, data: b64 });
+  }
+
+  /**
+   * Retrieve a binary blob as a base64 string.
+   * Returns null if the key does not exist or is not a blob record.
+   */
+  async getBlobAsync(key: string): Promise<string | null> {
+    this.ensureInitialized();
+    return getNativeDB().getBlobAsync(key);
   }
 
   /**

@@ -187,4 +187,41 @@ void BufferedBTree::clear() {
     }
 }
 
+std::vector<std::pair<std::string, size_t>> BufferedBTree::prefixSearch(const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+
+    // Use a map so the in-buffer (newer) values override stale disk values
+    std::map<std::string, size_t> key_map;
+
+    // 1. Get prefix matches from disk B+Tree (true prefix scan)
+    auto disk_results = tree_->prefixSearchWithOffsets(prefix);
+    for (const auto& res : disk_results) {
+        key_map[res.first] = res.second;
+    }
+
+    // 2. Overlay flushing buffer
+    for (const auto& op : flushing_buffer_) {
+        if (op.key.compare(0, prefix.size(), prefix) == 0) {
+            key_map[op.key] = op.data_offset;
+        }
+    }
+
+    // 3. Overlay write buffer (newest wins)
+    for (const auto& op : write_buffer_) {
+        if (op.key.compare(0, prefix.size(), prefix) == 0) {
+            key_map[op.key] = op.data_offset;
+        }
+    }
+
+    // 4. Collect non-tombstoned results
+    std::vector<std::pair<std::string, size_t>> results;
+    for (const auto& [key, offset] : key_map) {
+        if (offset > 0) {
+            results.emplace_back(key, offset);
+        }
+    }
+
+    return results;
+}
+
 }
