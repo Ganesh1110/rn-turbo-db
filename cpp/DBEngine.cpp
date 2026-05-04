@@ -1742,12 +1742,9 @@ void installDBEngine(
     facebook::jsi::Runtime& runtime,
     std::shared_ptr<facebook::react::CallInvoker> js_invoker,
     std::unique_ptr<SecureCryptoContext> crypto) {
-    std::cerr << "[TurboDB] installDBEngine: START" << std::endl;
     auto engine = std::make_shared<DBEngine>(js_invoker, std::move(crypto));
     g_engine = engine;
-    std::cerr << "[TurboDB] installDBEngine: created engine, setting NativeDB on global" << std::endl;
     runtime.global().setProperty(runtime, "NativeDB", facebook::jsi::Object::createFromHostObject(runtime, engine));
-    std::cerr << "[TurboDB] installDBEngine: DONE - NativeDB should be available" << std::endl;
 }
 
 std::shared_ptr<DBEngine> getDBEngine() {
