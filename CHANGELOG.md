@@ -4,25 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [1.3.0] - 2026-05-03
 
-### Added (Data Management Features Release - v1.3.0)
+### Added (Data Management Features Release)
 
 - **Native TTL**: `setWithTTLAsync(key, value, ttlMs)` stores expiry as a durable `__ttl:` sidecar key in the C++ engine. `cleanupExpiredAsync()` sweeps all expired sidecar keys natively. Lazy JS-layer check preserved as fallback.
 - **True Prefix Search**: `getByPrefixAsync(prefix)` now delegates to native `prefixSearchAsync()` — a proper B+Tree prefix traversal (O(P+M)) instead of the previous `range(prefix, prefix+'\uffff')` hack. `PersistentBPlusTree::prefixSearchWithOffsets()` and `BufferedBTree::prefixSearch()` added.
 - **Regex Search**: `regexSearchAsync(pattern)` filters keys using `std::regex` natively. Falls back to JS `RegExp` on web.
-- **Native Import/Export**: `export()` now calls `exportDBAsync()` (native B+Tree traversal). `import()` calls `importDBAsync()` (native batch insert). Returns record count instead of void.
+- **Native Import/Export**: `exportAsync()` calls `exportDBAsync()` (native B+Tree traversal). `importAsync()` calls `importDBAsync()` (native batch insert). Returns record count.
 - **Blob Support**: `setBlobAsync(key, data)` / `getBlobAsync(key)` store raw binary data tagged with a `0xBB` prefix byte, bypassing JSON serialization. Base64 encoding bridges the JSI boundary.
-- **Developer Greeting**: `android/build.gradle` prints `[TurboDB] 🔥 Your app is boosted by react-native-turbo-db!` in green during Gradle configuration. `TurboDB.podspec` prints the equivalent during `pod install`.
+- **Developer Greeting**: `android/build.gradle` prints `[TurboDB] 🔥 Your app is boosted by react-native-turbo-db!` during Gradle configuration. `TurboDB.podspec` prints the equivalent during `pod install`.
 
-### API Changes
+### Changed
 
 - `import()` return type changed from `Promise<void>` to `Promise<number>` (number of records imported)
 - `setWithTTL()` now calls `ensureInitialized()` to avoid silent no-ops
 - `cleanupExpired()` deprecated in favour of `cleanupExpiredAsync()`
+- Fixed TypeScript `exports` map: `import` and `require` now use object form with `types` sub-field
+
+---
 
 ## [1.2.0] - 2026-04-29
 
-
-### Added (Performance Release - v1.2.0)
+### Added (Performance Engine Release)
 
 - **Data-Level LRU Cache**: Cache deserialized JSI values for hot keys, avoiding repeated mmap reads and BinarySerializer deserialization
 - **Zero-Copy Path**: Direct decode for simple types (null, boolean, number, short strings) without full binary deserialization
@@ -34,6 +36,20 @@ All notable changes to this project will be documented in this file.
 - Hot key reads now served from LRU cache (avoids mmap + deserialize)
 - Simple types bypass serialization (zero-copy decode)
 - Range queries benefit from B+Tree leaf prefetching
+
+---
+
+## [1.1.0] - 2026-04-27
+
+### Added (Core Reliability Foundation Release)
+
+- **Delete Integrity**: Persist tombstones to disk, update `pbtree_`, reuse freed offsets
+- **Transaction Safety**: `beginTransaction()` / `commitTransaction()` / `rollbackTransaction()` with WAL `TX_BEGIN`/`COMMIT` markers
+- **Database Repair**: Real B+Tree corruption detection + repair logic (not stub) — `repair()` fixes corrupted B+Tree headers
+- **Concurrent Safety**: Consistent `rw_mutex_` (shared/unique) usage across all read/write paths
+- **Batch WAL Writes**: Group multiple writes into single WAL entry + `fsync` via `setMultiAsync()`
+
+---
 
 ## [0.1.0] - 2026-04-19
 

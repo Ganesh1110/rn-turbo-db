@@ -13,17 +13,18 @@
 
 **react-native-turbo-db** is a high-performance JSI database and **AsyncStorage alternative** for React Native, featuring encrypted storage, WAL persistence, B+tree indexing, and offline-first local database support.
 
-## ⚡ What's New in v1.2.0 (Performance Engine)
+## ⚡ What's New in v1.3.0 (Data Management Release)
 
-TurboDB v1.2.0 introduces significant performance optimizations to your data layer:
+TurboDB v1.3.0 transforms your KV store into a feature-rich embedded database:
 
-- 🚀 **Data-Level LRU Cache** — Frequently accessed keys served directly from an in-memory JSI cache.
-- 💎 **Zero-Copy Path** — Simple data types (strings, numbers) read directly from memory views.
-- 📖 **Read-Ahead Prefetching** — Drastically speeds up `rangeQuery` and `getByPrefix` operations.
-- 📦 **Built-in Compression** — Seamless `zlib` integration for large objects, saving up to 60% disk space.
+- ⏱️ **Native TTL / Expiration** — `setWithTTLAsync(key, value, ttlMs)` stores expiry durably as a C++ sidecar key. `cleanupExpiredAsync()` sweeps all expired records natively.
+- 🔍 **True Prefix Search** — `getByPrefixAsync(prefix)` now uses a native B+Tree prefix traversal (O(P+M)) — up to **10x faster** than the previous range-hack.
+- 🧪 **Regex Key Search** — `regexSearchAsync(pattern)` filters keys natively using `std::regex`.
+- 📤 **Native Import / Export** — Full database snapshot export/import via B+Tree traversal, no JS-layer bottleneck.
+- 🗂️ **Blob Support** — `setBlobAsync(key, base64)` / `getBlobAsync(key)` for values >1MB, bypassing JSON serialization.
 
 > [!NOTE]
-> _Built on the v1.1.0 Core Reliability Engine: Atomic Transactions, 10x WAL Batching, and B+Tree Auto-Repair._
+> _Built on the v1.2.0 Performance Engine: LRU Cache, Zero-Copy Path, Read-Ahead Prefetch, and Compression._
 
 ---
 
@@ -158,13 +159,23 @@ await db.deleteAllAsync();
 | `rangeQueryAsync(start, end)` | Background range fetch.                                     |
 | `getAllKeysAsync()`           | Background get all keys.                                    |
 
-### Extended API
+### Extended API (v1.3.0)
 
-- **TTL**: `setWithTTL(key, value, ttlMs)` and `cleanupExpired()`
-- **Compare & Set**: `compareAndSet(key, expected, next)`
-- **Merge**: `merge(key, partialObj)`
-- **Secure Storage**: `setSecureItemAsync(key, val)`, `getSecureItemAsync(key)`
-- **Streaming**: `for await (const key of db.streamKeys()) { ... }`
+| Method | Description |
+| :--- | :--- |
+| `setWithTTLAsync(key, val, ttlMs)` | Native TTL — durable expiry via C++ sidecar key |
+| `cleanupExpiredAsync()` | Native sweep of all expired TTL keys. Returns count. |
+| `getByPrefixAsync(prefix)` | Native B+Tree prefix traversal |
+| `regexSearchAsync(pattern)` | Regex key filter using `std::regex` |
+| `exportAsync()` | Full DB snapshot as JSON (native traversal) |
+| `importAsync(data)` | Bulk insert from JSON. Returns record count. |
+| `setBlobAsync(key, base64)` | Store raw binary data >1MB |
+| `getBlobAsync(key)` | Retrieve raw binary as base64 |
+| `compareAndSet(key, expected, next)` | Atomic compare-and-set |
+| `merge(key, partial)` | Shallow-merge into existing object |
+| `setSecureItemAsync(key, val)` | Hardware Secure Enclave storage |
+| `getSecureItemAsync(key)` | Retrieve from Secure Enclave |
+| `for await (const key of db.streamKeys())` | Async key streaming for large datasets |
 
 </details>
 
@@ -299,6 +310,9 @@ MIT © [Ganesh Jayaprakash](https://github.com/ganeshjayaprakash)
 
 <p align="center">
   <a href="ROADMAP.md">Roadmap</a> •
+  <a href="CHANGELOG.md">Changelog</a> •
   <a href="CONTRIBUTING.md">Contributing</a> •
   <a href="https://github.com/ganeshjayaprakash/react-native-turbo-db">GitHub</a>
 </p>
+
+<p align="center"><sub>Last updated: May 2026 — v1.3.0 Data Management Release</sub></p>
