@@ -140,6 +140,15 @@ void Compactor::runCompaction(
              bytes_saved,
              old_size > 0 ? (100.0 * bytes_saved / old_size) : 0.0);
 
+        // ── R4 fix: Remap mmap to the new compacted file ─────────────────────
+        // After rename(), the old mmap fd still points to the original (now
+        // unlinked) file. Close and re-open so future reads/writes use the
+        // compacted file. Use old_size as the map size — the compacted file is
+        // smaller but we keep the same virtual region for B+Tree compatibility.
+        mmap->close();
+        mmap->init(db_path_, old_size);
+        LOGI("Compactor: mmap remapped to compacted file, new size=%zu", old_size);
+
         if (onDone) onDone(true, bytes_saved);
 
     } catch (const std::exception& e) {

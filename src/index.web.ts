@@ -222,6 +222,83 @@ export class TurboDB {
     if (kListeners) kListeners.forEach((cb) => cb(value));
   }
 
+  // ── R4: Live Query API ──────────────────────────────────────
+
+  watchKey(key: string, callback: (value: any) => void): () => void {
+    callback(this.get(key));
+    return this.subscribe(key, callback);
+  }
+
+  watchPrefix(
+    prefix: string,
+    callback: (results: RangeQueryResult[]) => void,
+    options: { debounceMs?: number } = {}
+  ): () => void {
+    const debounceMs = options.debounceMs ?? 0;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let isActive = true;
+
+    const rerun = () => {
+      if (!isActive) return;
+      Promise.resolve(this.getByPrefix(prefix))
+        .then(callback)
+        .catch(console.error);
+    };
+
+    const schedule = () => {
+      if (debounceMs > 0) {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(rerun, debounceMs);
+      } else {
+        rerun();
+      }
+    };
+
+    rerun();
+
+    const unsub = this.subscribeAll((event) => {
+      if (event.key.startsWith(prefix) || prefix === '') schedule();
+    });
+
+    return () => {
+      isActive = false;
+      if (timeout) clearTimeout(timeout);
+      unsub();
+    };
+  }
+
+  watchQuery<T>(
+    queryFn: () => Promise<T>,
+    callback: (result: T) => void,
+    options: { debounceMs?: number } = {}
+  ): () => void {
+    const debounceMs = options.debounceMs ?? 100;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let isActive = true;
+
+    const rerun = () => {
+      if (!isActive) return;
+      queryFn().then(callback).catch(console.error);
+    };
+
+    const schedule = () => {
+      if (debounceMs > 0) {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(rerun, debounceMs);
+      } else {
+        rerun();
+      }
+    };
+
+    rerun();
+    const unsub = this.subscribeAll(() => schedule());
+    return () => {
+      isActive = false;
+      if (timeout) clearTimeout(timeout);
+      unsub();
+    };
+  }
+
   // --- Basic API ---
 
   async init(): Promise<void> {
@@ -614,6 +691,10 @@ export class TurboDB {
   async compact(): Promise<boolean> {
     await this.persistToIndexedDB();
     return true;
+  }
+
+  async compactAsync(): Promise<boolean> {
+    return this.compact();
   }
 
   async export(): Promise<Record<string, any>> {

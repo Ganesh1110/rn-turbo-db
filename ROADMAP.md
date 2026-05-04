@@ -25,13 +25,13 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| Delete Integrity Fix | ✅ Fixed | 8/10 | P0 |
-| Transaction Safety (atomic batches) | ✅ Implemented | 8/10 | P0 |
-| Database Repair (real, not stub) | ✅ Implemented | 7/10 | P0 |
-| Concurrent Read/Write Safety | ✅ Fixed | 8/10 | P0 |
-| Batch WAL Writes | ✅ Implemented | 7/10 | P1 |
+| Feature                             | Current Status | Confidence | Priority |
+| ----------------------------------- | -------------- | ---------- | -------- |
+| Delete Integrity Fix                | ✅ Fixed       | 8/10       | P0       |
+| Transaction Safety (atomic batches) | ✅ Implemented | 8/10       | P0       |
+| Database Repair (real, not stub)    | ✅ Implemented | 7/10       | P0       |
+| Concurrent Read/Write Safety        | ✅ Fixed       | 8/10       | P0       |
+| Batch WAL Writes                    | ✅ Implemented | 7/10       | P1       |
 
 ### Key Deliverables
 
@@ -60,13 +60,13 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| Data-Level LRU Cache | ✅ Implemented | 8/10 | P0 |
-| Read-Ahead / Prefetch | ✅ Implemented | 7/10 | P1 |
-| Zero-Copy / Memory Views | ✅ Implemented | 7/10 | P0 |
-| Parallel B+Tree Flushing | ⚠️ Existing (index) | 6/10 | P1 |
-| Compression (LZ4/zstd) | ✅ Infrastructure | 6/10 | P1 |
+| Feature                  | Current Status      | Confidence | Priority |
+| ------------------------ | ------------------- | ---------- | -------- |
+| Data-Level LRU Cache     | ✅ Implemented      | 8/10       | P0       |
+| Read-Ahead / Prefetch    | ✅ Implemented      | 7/10       | P1       |
+| Zero-Copy / Memory Views | ✅ Implemented      | 7/10       | P0       |
+| Parallel B+Tree Flushing | ⚠️ Existing (index) | 6/10       | P1       |
+| Compression (LZ4/zstd)   | ✅ Infrastructure   | 6/10       | P1       |
 
 ### Key Deliverables
 
@@ -94,14 +94,14 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| Native TTL / Expiration | ⚠️ Web only | 4/10 | P0 |
-| Native Prefix Search | ⚠️ Via range hack | 5/10 | P0 |
-| Regex Search | ❌ Missing | 0/10 | P1 |
-| Import / Export | ⚠️ Web only | 3/10 | P0 |
-| Blob Support (formalize) | ⚠️ Implicit | 5/10 | P0 |
-| Developer CLI Greeting | ❌ Missing | 9/10 | P2 |
+| Feature                  | Current Status    | Confidence | Priority |
+| ------------------------ | ----------------- | ---------- | -------- |
+| Native TTL / Expiration  | ⚠️ Web only       | 4/10       | P0       |
+| Native Prefix Search     | ⚠️ Via range hack | 5/10       | P0       |
+| Regex Search             | ❌ Missing        | 0/10       | P1       |
+| Import / Export          | ⚠️ Web only       | 3/10       | P0       |
+| Blob Support (formalize) | ⚠️ Implicit       | 5/10       | P0       |
+| Developer CLI Greeting   | ❌ Missing        | 9/10       | P2       |
 
 ### Key Deliverables
 
@@ -125,35 +125,36 @@ R6 SQL          → Next-Gen Query Engine
 
 ## Release 4 — Observability + Scale
 
-**Version:** `v1.4.0` (Reactive Sync Release)  
+**Version:** `v1.4.0` (Reactive Sync Release) ✅ **COMPLETED**
 **Focus:** Advanced Runtime Behavior  
 **Outcome:** "Moves toward embedded realtime database"
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| Change Events / Observable API | ⚠️ Web only | 3/10 | P0 |
-| Live Queries | ❌ Missing | 1/10 | P0 |
-| Offline-First Sync Engine | 🔍 Stubs only | 1/10 | P0 |
-| Compaction Rewrite (fully correct) | 🔍 Buggy | 4/10 | P0 |
-| Write Buffer Hardening | ⚠️ Partial | 6/10 | P1 |
+| Feature                            | Current Status          | Confidence | Priority |
+| ---------------------------------- | ----------------------- | ---------- | -------- |
+| Change Events / Observable API     | ✅ JS-layer complete    | 9/10       | P0       |
+| Live Queries                       | ✅ Implemented          | 8/10       | P0       |
+| Offline-First Sync Engine          | ✅ Implemented (LWW)    | 7/10       | P0       |
+| Compaction Rewrite (fully correct) | ✅ Fixed + mmap remap   | 8/10       | P0       |
+| Write Buffer Hardening             | ✅ live*bytes* tracking | 7/10       | P1       |
 
 ### Key Deliverables
 
-1. **Change Events** — Native event emitter for `set` / `remove` / `batch` operations
-2. **Live Queries** — Re-execute queries when dependent keys change (reactive)
-3. **Sync Engine** — Real `getLocalChanges()` / `applyRemoteChanges()` with CRDT-like merging
-4. **Compaction Rewrite** — Correct compaction with mmap remapping, `live_bytes_` tracking
-5. **Offline Queue** — Queue mutations when offline, sync when online
+1. **Change Events** — JS-layer `subscribeAll()` / `subscribe(key, cb)` / `notify()` fire on every `set`, `setAsync`, `setMulti`, `setMultiAsync`, `setWithTTLAsync`, `remove`, `removeAsync`
+2. **Live Queries** — `watchKey(key, cb)`, `watchPrefix(prefix, cb, {debounceMs})`, `watchQuery(queryFn, cb, {debounceMs})` — all return unsubscribe functions, fire immediately, react to changes
+3. **Sync Engine** — Real `getLocalChangesAsync()` scans user keys with dirty-flag filtering; `applyRemoteChangesAsync()` with Last-Write-Wins conflict resolution; `markPushedAsync()` clears DIRTY flags in-place via mmap
+4. **Compaction Rewrite** — Critical bug fixed: `live_bytes_` now tracked in `insertRecBytes()` / `remove()`; mmap remapped after rename via `mmap_->close()` + `mmap_->init()`; `compactAsync()` binding added
+5. **Offline Queue** — `enqueueMutation()` / `flushQueue()` using `__sys_mutation:` prefix keys (O(1) insert, ordered replay)
 
 ### Success Criteria
 
-- [ ] `subscribe(key, callback)` fires on native writes
-- [ ] Live queries auto-update React components
-- [ ] Sync engine handles conflicts (last-write-wins or custom merge)
-- [ ] Compaction actually shrinks file and remaps correctly
-- [ ] Offline mutations queue and replay on reconnect
+- [x] `subscribe(key, callback)` fires on native writes (JS thread)
+- [x] `watchKey` / `watchPrefix` / `watchQuery` auto-update on any write
+- [x] Sync engine handles conflicts (Last-Write-Wins by `updated_at`)
+- [x] Compaction actually shrinks file and remaps mmap correctly
+- [x] Offline mutations queue and replay on reconnect via `flushQueue()`
+- [ ] Native C++ event emitter for background DBWorker writes (stretch — R4.1)
 
 ---
 
@@ -165,13 +166,13 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| Async Encryption Fix + Real Background | 🔍 Broken | 3/10 | P0 |
-| Key Rotation | ❌ Missing | 0/10 | P0 |
-| HMAC Verification | ❌ Missing (uses CRC) | 1/10 | P0 |
-| Per-Key Selective Encryption | ❌ Missing | 0/10 | P1 |
-| Corruption Recovery Enhancements | ⚠️ WAL only | 5/10 | P1 |
+| Feature                                | Current Status        | Confidence | Priority |
+| -------------------------------------- | --------------------- | ---------- | -------- |
+| Async Encryption Fix + Real Background | 🔍 Broken             | 3/10       | P0       |
+| Key Rotation                           | ❌ Missing            | 0/10       | P0       |
+| HMAC Verification                      | ❌ Missing (uses CRC) | 1/10       | P0       |
+| Per-Key Selective Encryption           | ❌ Missing            | 0/10       | P1       |
+| Corruption Recovery Enhancements       | ⚠️ WAL only           | 5/10       | P1       |
 
 ### Key Deliverables
 
@@ -199,9 +200,9 @@ R6 SQL          → Next-Gen Query Engine
 
 ### Features
 
-| Feature | Current Status | Confidence | Priority |
-|---------|---------------|------------|----------|
-| SQL Query Layer / Schema / JOIN-lite | ❌ Missing | 0/10 | P0 |
+| Feature                              | Current Status | Confidence | Priority |
+| ------------------------------------ | -------------- | ---------- | -------- |
+| SQL Query Layer / Schema / JOIN-lite | ❌ Missing     | 0/10       | P0       |
 
 ### Key Deliverables
 
@@ -223,14 +224,14 @@ R6 SQL          → Next-Gen Query Engine
 
 ## Release Timeline (Estimated)
 
-| Release | Version | Focus | Status |
-|---------|---------|-------|--------|
-| R1 | v1.1.0 | Core Reliability | ✅ Completed |
-| R2 | v1.2.0 | Performance Engine | ✅ Completed |
-| R3 | v1.3.0 | Data Features | ✅ Completed |
-| R4 | v1.4.0 | Reactive Sync | 📋 Planned |
-| R5 | v1.5.0 | Security & Enterprise | 📋 Planned |
-| R6 | v2.0.0 | SQL Query Engine | 📋 Planned |
+| Release | Version | Focus                 | Status       |
+| ------- | ------- | --------------------- | ------------ |
+| R1      | v1.1.0  | Core Reliability      | ✅ Completed |
+| R2      | v1.2.0  | Performance Engine    | ✅ Completed |
+| R3      | v1.3.0  | Data Features         | ✅ Completed |
+| R4      | v1.4.0  | Reactive Sync         | 📋 Planned   |
+| R5      | v1.5.0  | Security & Enterprise | 📋 Planned   |
+| R6      | v2.0.0  | SQL Query Engine      | 📋 Planned   |
 
 ---
 

@@ -99,6 +99,8 @@ declare const global: {
     importDBAsync(data: Record<string, any>): Promise<number>;
     setBlobAsync(args: { key: string; data: string }): Promise<boolean>;
     getBlobAsync(key: string): Promise<string | null>;
+    // ── R4: Compaction ──
+    compactAsync(): Promise<boolean>;
   };
   __NativeDB: any;
 };
@@ -398,6 +400,146 @@ export class TurboDB {
     if (kListeners) {
       kListeners.forEach((cb) => cb(value));
     }
+  }
+
+  // ── R4: Live Query API ───────────────────────────────────────
+  // All watch* methods return an unsubscribe function.
+
+  /**
+   * Watch a specific key for changes. Fires immediately with the current
+   * value, then again on every set() / setAsync() / remove() for that key.
+   *
+   * @param key - The key to watch.
+   * @param callback - Called with the new value (or undefined when deleted).
+   * @returns Unsubscribe function.
+   *
+   * @example
+   * const unsub = db.watchKey('user:1', (val) => setUser(val));
+   * // Later:
+   * unsub();
+   */
+  watchKey(key: string, callback: (value: any) => void): () => void {
+    // Fire immediately with current value
+    callback(this.get(key));
+    return this.subscribe(key, callback);
+  }
+
+  /**
+   * Watch all keys matching a prefix. Fires immediately with current results,
+   * then re-runs the prefix query whenever any key in the database changes.
+   *
+   * Note: For best performance, use a specific prefix. The callback re-runs
+   * a native C++ prefix scan which is O(P+M) but still a read on every write.
+   * For write-heavy workloads consider debouncing with a `delay` option.
+   *
+   * @param prefix - Key prefix to watch (e.g. 'user:', 'orders:2024:').
+   * @param callback - Called with the full array of {key, value} results.
+   * @param options.debounceMs - Minimum ms between callback invocations (default: 0).
+   * @returns Unsubscribe function.
+   *
+   * @example
+   * const unsub = db.watchPrefix('orders:', (results) => setOrders(results));
+   */
+  watchPrefix(
+    prefix: string,
+    callback: (results: RangeQueryResult[]) => void,
+    options: { debounceMs?: number } = {}
+  ): () => void {
+    const debounceMs = options.debounceMs ?? 0;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let isActive = true;
+
+    const rerun = () => {
+      if (!isActive) return;
+      this.getByPrefixAsync(prefix)
+        .then(callback)
+        .catch((e) =>
+          console.error(`[TurboDB] watchPrefix error for "${prefix}":`, e)
+        );
+    };
+
+    const schedule = () => {
+      if (debounceMs > 0) {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(rerun, debounceMs);
+      } else {
+        rerun();
+      }
+    };
+
+    // Fire immediately
+    rerun();
+
+    // Re-fire on any set/remove that is within the prefix, or on the full
+    // subscribeAll for simplicity (native prefix scan is fast enough).
+    const unsub = this.subscribeAll((event) => {
+      if (event.type === 'set' || event.type === 'remove') {
+        // Only re-query if the changed key is within the watched prefix
+        if (event.key.startsWith(prefix) || prefix === '') {
+          schedule();
+        }
+      }
+    });
+
+    return () => {
+      isActive = false;
+      if (timeout) clearTimeout(timeout);
+      unsub();
+    };
+  }
+
+  /**
+   * Watch the result of an arbitrary async query function.
+   * The query is re-executed whenever any key in the database changes.
+   *
+   * Use this for complex queries that don't fit `watchPrefix()`.
+   *
+   * @param queryFn - Async function returning the query result.
+   * @param callback - Called with the result whenever it may have changed.
+   * @param options.debounceMs - Debounce in ms between re-executions (default: 100).
+   * @returns Unsubscribe function.
+   *
+   * @example
+   * const unsub = db.watchQuery(
+   *   () => db.rangeQueryAsync('a', 'z'),
+   *   (results) => setItems(results)
+   * );
+   */
+  watchQuery<T>(
+    queryFn: () => Promise<T>,
+    callback: (result: T) => void,
+    options: { debounceMs?: number } = {}
+  ): () => void {
+    const debounceMs = options.debounceMs ?? 100;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let isActive = true;
+
+    const rerun = () => {
+      if (!isActive) return;
+      queryFn()
+        .then(callback)
+        .catch((e) => console.error('[TurboDB] watchQuery error:', e));
+    };
+
+    const schedule = () => {
+      if (debounceMs > 0) {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(rerun, debounceMs);
+      } else {
+        rerun();
+      }
+    };
+
+    // Fire immediately
+    rerun();
+
+    const unsub = this.subscribeAll(() => schedule());
+
+    return () => {
+      isActive = false;
+      if (timeout) clearTimeout(timeout);
+      unsub();
+    };
   }
 
   private indexes: Set<string> = new Set();
@@ -1121,15 +1263,18 @@ export class TurboDB {
   }
 
   /**
-   * Triggers compaction to reclaim fragmented mmap space and optimize B-Tree structure.
-   *
-   * Note: Currently delegates to the WAL-first repair path, which also defragments
-   * the tree after archiving fragmented pages. A dedicated non-destructive compaction
-   * binding (DBScheduler::Priority::COMPACTION) is planned for a future native release.
+   * Triggers compaction to reclaim fragmented mmap space.
+   * Uses the native C++ Compactor with mmap remap (R4+).
+   * Auto-skips if fragmentation < 30%.
    */
   async compact(): Promise<boolean> {
     this.ensureInitialized();
-    return getNativeDB().repair();
+    const ndb = getNativeDB();
+    if (typeof ndb.compactAsync === 'function') {
+      return ndb.compactAsync();
+    }
+    // Fallback for older native build: use repair
+    return ndb.repair();
   }
 
   /**

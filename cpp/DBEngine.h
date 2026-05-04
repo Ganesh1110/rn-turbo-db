@@ -114,6 +114,9 @@ public:
     facebook::jsi::Value getBlobAsync(facebook::jsi::Runtime& runtime,
                                       const facebook::jsi::Value& args);
 
+    // ── R4: Compaction ──
+    facebook::jsi::Value compactAsync(facebook::jsi::Runtime& runtime);
+
     // ── Sync Engine API ──
     facebook::jsi::Value getLocalChangesAsync(facebook::jsi::Runtime& runtime,
                                               const facebook::jsi::Value& args);

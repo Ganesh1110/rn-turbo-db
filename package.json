@@ -1,6 +1,6 @@
 {
   "name": "react-native-turbo-db",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "react-native-turbo-db is a high-performance JSI database and AsyncStorage alternative for React Native, featuring encrypted storage, WAL persistence, B+tree indexing and offline-first local database support.",
   "engines": {
     "node": ">=18"

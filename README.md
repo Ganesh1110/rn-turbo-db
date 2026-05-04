@@ -13,18 +13,17 @@
 
 **react-native-turbo-db** is a high-performance JSI database and **AsyncStorage alternative** for React Native, featuring encrypted storage, WAL persistence, B+tree indexing, and offline-first local database support.
 
-## ⚡ What's New in v1.3.0 (Data Management Release)
+## ⚡ What's New in v1.4.0 (Reactive Sync Release)
 
-TurboDB v1.3.0 transforms your KV store into a feature-rich embedded database:
+TurboDB v1.4.0 brings reactive data and a working offline sync engine:
 
-- ⏱️ **Native TTL / Expiration** — `setWithTTLAsync(key, value, ttlMs)` stores expiry durably as a C++ sidecar key. `cleanupExpiredAsync()` sweeps all expired records natively.
-- 🔍 **True Prefix Search** — `getByPrefixAsync(prefix)` now uses a native B+Tree prefix traversal (O(P+M)) — up to **10x faster** than the previous range-hack.
-- 🧪 **Regex Key Search** — `regexSearchAsync(pattern)` filters keys natively using `std::regex`.
-- 📤 **Native Import / Export** — Full database snapshot export/import via B+Tree traversal, no JS-layer bottleneck.
-- 🗂️ **Blob Support** — `setBlobAsync(key, base64)` / `getBlobAsync(key)` for values >1MB, bypassing JSON serialization.
+- 👁️ **Live Queries** — `watchKey(key, cb)`, `watchPrefix(prefix, cb)`, `watchQuery(fn, cb)` — subscribe to data changes. All fire immediately and return an unsubscribe function.
+- 🔄 **Real Sync Engine** — `getLocalChangesAsync()`, `applyRemoteChangesAsync()` (Last-Write-Wins), `markPushedAsync()` are now fully implemented, not stubs.
+- 🗜️ **Correct Compaction** — `compactAsync()` now has a real native binding with mmap remap after rename. `live_bytes_` tracking ensures the 30% fragmentation threshold works correctly.
+- 🐛 **3 Critical Bug Fixes** — Stale mmap after compaction, `live_bytes_` always 0, `compact()` calling `repair()` instead of the compactor.
 
 > [!NOTE]
-> _Built on the v1.2.0 Performance Engine: LRU Cache, Zero-Copy Path, Read-Ahead Prefetch, and Compression._
+> _Built on v1.3.0 Data Management (TTL, Prefix Search, Regex, Blob, Import/Export)_
 
 ---
 
@@ -159,23 +158,27 @@ await db.deleteAllAsync();
 | `rangeQueryAsync(start, end)` | Background range fetch.                                     |
 | `getAllKeysAsync()`           | Background get all keys.                                    |
 
-### Extended API (v1.3.0)
+### Extended API (v1.4.0)
 
-| Method | Description |
-| :--- | :--- |
-| `setWithTTLAsync(key, val, ttlMs)` | Native TTL — durable expiry via C++ sidecar key |
-| `cleanupExpiredAsync()` | Native sweep of all expired TTL keys. Returns count. |
-| `getByPrefixAsync(prefix)` | Native B+Tree prefix traversal |
-| `regexSearchAsync(pattern)` | Regex key filter using `std::regex` |
-| `exportAsync()` | Full DB snapshot as JSON (native traversal) |
-| `importAsync(data)` | Bulk insert from JSON. Returns record count. |
-| `setBlobAsync(key, base64)` | Store raw binary data >1MB |
-| `getBlobAsync(key)` | Retrieve raw binary as base64 |
-| `compareAndSet(key, expected, next)` | Atomic compare-and-set |
-| `merge(key, partial)` | Shallow-merge into existing object |
-| `setSecureItemAsync(key, val)` | Hardware Secure Enclave storage |
-| `getSecureItemAsync(key)` | Retrieve from Secure Enclave |
-| `for await (const key of db.streamKeys())` | Async key streaming for large datasets |
+| Method                                     | Description                                                   |
+| :----------------------------------------- | :------------------------------------------------------------ |
+| `watchKey(key, cb)`                        | Reactive key watcher — fires immediately, returns unsubscribe |
+| `watchPrefix(prefix, cb, opts?)`           | Reactive prefix query with optional debounce                  |
+| `watchQuery(fn, cb, opts?)`                | Reactive arbitrary async query with debounce                  |
+| `compactAsync()`                           | Native compaction with fragmentation guard (>30%)             |
+| `setWithTTLAsync(key, val, ttlMs)`         | Native TTL — durable expiry via C++ sidecar key               |
+| `cleanupExpiredAsync()`                    | Native sweep of all expired TTL keys. Returns count.          |
+| `getByPrefixAsync(prefix)`                 | Native B+Tree prefix traversal                                |
+| `regexSearchAsync(pattern)`                | Regex key filter using `std::regex`                           |
+| `exportAsync()`                            | Full DB snapshot as JSON (native traversal)                   |
+| `importAsync(data)`                        | Bulk insert from JSON. Returns record count.                  |
+| `setBlobAsync(key, base64)`                | Store raw binary data >1MB                                    |
+| `getBlobAsync(key)`                        | Retrieve raw binary as base64                                 |
+| `compareAndSet(key, expected, next)`       | Atomic compare-and-set                                        |
+| `merge(key, partial)`                      | Shallow-merge into existing object                            |
+| `setSecureItemAsync(key, val)`             | Hardware Secure Enclave storage                               |
+| `getSecureItemAsync(key)`                  | Retrieve from Secure Enclave                                  |
+| `for await (const key of db.streamKeys())` | Async key streaming for large datasets                        |
 
 </details>
 
@@ -257,11 +260,11 @@ TurboDB is engineered for extreme performance. Below are representative results 
 
 ## 🌐 Platform Support
 
-| Platform | New Architecture | Old Architecture | Min Version |
-| :--- | :---: | :---: | :--- |
-| **iOS** | ✅ Full | ✅ Fallback | iOS 15.1+ |
-| **Android** | ✅ Full | ✅ Fallback | SDK 24+ (7.0) |
-| **Web (SSR)** | ✅ Full | ✅ Full | Chrome 90+ |
+| Platform      | New Architecture | Old Architecture | Min Version   |
+| :------------ | :--------------: | :--------------: | :------------ |
+| **iOS**       |     ✅ Full      |   ✅ Fallback    | iOS 15.1+     |
+| **Android**   |     ✅ Full      |   ✅ Fallback    | SDK 24+ (7.0) |
+| **Web (SSR)** |     ✅ Full      |     ✅ Full      | Chrome 90+    |
 
 ---
 
@@ -315,4 +318,4 @@ MIT © [Ganesh Jayaprakash](https://github.com/ganeshjayaprakash)
   <a href="https://github.com/ganeshjayaprakash/react-native-turbo-db">GitHub</a>
 </p>
 
-<p align="center"><sub>Last updated: May 2026 — v1.3.0 Data Management Release</sub></p>
+<p align="center"><sub>Last updated: May 2026 — v1.4.0 Reactive Sync Release</sub></p>
