@@ -63,6 +63,10 @@ No additional configuration required. The pod installs automatically.
 import { TurboDB } from 'react-native-turbo-db';
 
 const initDB = async () => {
+  // ⚠️ Important for New Architecture (Bridgeless / Fabric):
+  // A short delay before the first JSI call ensures native modules are fully wired up
+  await new Promise((r) => setTimeout(r, 100));
+
   const docsDir = TurboDB.getDocumentsDirectory();
   const dbPath = `${docsDir}/myapp.db`;
 
@@ -104,6 +108,29 @@ const data = await db.getAsync('largeData');
 
 // Batch async write (10x faster with WAL batching)
 await db.setMultiAsync(largeBatchObject);
+```
+
+### ⚡ Live Queries & Reactive Sync (v1.4.0)
+
+TurboDB now supports native real-time subscriptions. The UI will instantly update even if writes happen on a C++ background thread!
+
+```tsx
+import { useEffect, useState } from 'react';
+
+function ChatApp({ db }) {
+  const [messages, setMessages] = useState([]);
+
+  useEffect(() => {
+    // Subscribe to all keys starting with 'msg:'
+    const unsubscribe = db.watchPrefix('msg:', (results) => {
+      setMessages(results.map(r => r.value));
+    });
+    return () => unsubscribe();
+  }, [db]);
+
+  // Calling setAsync here triggers the watchPrefix callback automatically!
+  const send = async (text) => db.setAsync(`msg:${Date.now()}`, { text });
+}
 ```
 
 ### Advanced Queries
