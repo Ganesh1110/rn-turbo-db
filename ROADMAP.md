@@ -96,12 +96,12 @@ R6 SQL          → Next-Gen Query Engine
 
 | Feature                  | Current Status    | Confidence | Priority |
 | ------------------------ | ----------------- | ---------- | -------- |
-| Native TTL / Expiration  | ⚠️ Web only       | 4/10       | P0       |
-| Native Prefix Search     | ⚠️ Via range hack | 5/10       | P0       |
-| Regex Search             | ❌ Missing        | 0/10       | P1       |
-| Import / Export          | ⚠️ Web only       | 3/10       | P0       |
-| Blob Support (formalize) | ⚠️ Implicit       | 5/10       | P0       |
-| Developer CLI Greeting   | ❌ Missing        | 9/10       | P2       |
+| Native TTL / Expiration  | ✅ Implemented    | 9/10       | P0       |
+| Native Prefix Search     | ✅ Implemented    | 9/10       | P0       |
+| Regex Search             | ✅ Implemented    | 9/10       | P1       |
+| Import / Export          | ✅ Implemented    | 9/10       | P0       |
+| Blob Support (formalize) | ✅ Implemented    | 8/10       | P0       |
+| Developer CLI Greeting   | ✅ Implemented    | 9/10       | P2       |
 
 ### Key Deliverables
 
